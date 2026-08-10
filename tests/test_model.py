@@ -238,3 +238,11 @@ class TestFastSCNNDimming:
         with torch.no_grad():
             out = model(x)
         assert out.shape == (2, 1, 96, 160), f"Expected [2, 1, 96, 160], got {list(out.shape)}"
+
+    def test_mac_profiler(self):
+        """Verify MAC profiling runs and produces positive MACs."""
+        from calculate_macs import profile_fast_scnn_dimming
+        records, total_params, total_macs = profile_fast_scnn_dimming(height=128, width=224)
+        assert len(records) > 0
+        assert total_params > 0
+        assert total_macs > 0
