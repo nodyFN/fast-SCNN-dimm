@@ -22,6 +22,7 @@ class TestBinaryMetrics:
         acc.update(prob, soft_target, binary_mask)
         m = acc.compute()
         assert abs(m["fg_iou"] - 1.0) < 1e-4
+        assert abs(m["miou"] - 1.0) < 1e-4
         assert abs(m["dice"] - 1.0) < 1e-4
         assert abs(m["precision"] - 1.0) < 1e-4
         assert abs(m["recall"] - 1.0) < 1e-4

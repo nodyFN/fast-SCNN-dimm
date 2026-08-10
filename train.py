@@ -55,7 +55,7 @@ from utils.losses import DimmingLoss
 from utils.metrics import MetricAccumulator, format_metrics
 from utils.scheduler import build_scheduler
 from utils.seed import seed_everything
-from utils.visualization import save_training_visualization
+from utils.visualization import plot_training_curves, save_training_visualization
 
 logging.basicConfig(
     level=logging.INFO,
@@ -668,6 +668,19 @@ def main() -> None:
     logger.info(f"Run directory: {run_dir}")
     logger.info("")
 
+    # Training history for plotting curves
+    history: dict = {
+        "epoch": [],
+        "train_loss": [],
+        "val_loss": [],
+        "fg_iou": [],
+        "miou": [],
+        "dice": [],
+        "fg_mean_protection": [],
+        "soft_mae": [],
+        "far_bg_leakage": [],
+    }
+
     # ── Training loop ────────────────────────────────────────────────
     for epoch in range(start_epoch, cfg.epochs):
         t0 = time.time()
@@ -693,6 +706,8 @@ def main() -> None:
             f"fg_prot={val_metrics['fg_mean_protection']:.4f} | "
             f"soft_mae={val_metrics['soft_mae']:.4f} | "
             f"fg_iou={val_metrics['fg_iou']:.4f} | "
+            f"miou={val_metrics['miou']:.4f} | "
+            f"dice={val_metrics['dice']:.4f} | "
             f"bg_leak={val_metrics['far_bg_leakage']:.4f} | "
             f"time={elapsed:.1f}s"
         )
@@ -701,6 +716,19 @@ def main() -> None:
         writer.add_scalar("val/loss", val_loss, epoch)
         for name, value in val_metrics.items():
             writer.add_scalar(f"val/{name}", value, epoch)
+
+        # Record history & plot curves
+        history["epoch"].append(epoch + 1)
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["fg_iou"].append(val_metrics.get("fg_iou", 0.0))
+        history["miou"].append(val_metrics.get("miou", 0.0))
+        history["dice"].append(val_metrics.get("dice", 0.0))
+        history["fg_mean_protection"].append(val_metrics.get("fg_mean_protection", 0.0))
+        history["soft_mae"].append(val_metrics.get("soft_mae", 0.0))
+        history["far_bg_leakage"].append(val_metrics.get("far_bg_leakage", 0.0))
+
+        plot_training_curves(history, vis_dir / "training_curves.png")
 
         # Save checkpoint helper
         def _save(tag: str) -> None:
@@ -763,23 +791,41 @@ def main() -> None:
             _save(f"epoch_{epoch:04d}")
 
         # Visualization
-        if epoch % cfg.vis_interval == 0:
+        if epoch % cfg.vis_interval == 0 and cfg.num_vis_samples > 0:
             model.eval()
-            vis_batch = next(iter(val_loader))
+            vis_images_list, vis_masks_list, vis_soft_list, vis_pred_list = [], [], [], []
+            total_collected = 0
             with torch.no_grad():
-                vis_images = vis_batch["image"].to(device)
-                vis_logits = model(vis_images)
-                vis_prob = torch.sigmoid(vis_logits)
+                for vis_batch in val_loader:
+                    imgs = vis_batch["image"].to(device)
+                    b_masks = vis_batch["binary_mask"]
+                    s_masks = vis_batch["soft_mask"]
+                    preds = torch.sigmoid(model(imgs)).cpu()
 
-            save_training_visualization(
-                vis_dir / f"epoch_{epoch:04d}.jpg",
-                images=vis_batch["image"],
-                binary_masks=vis_batch["binary_mask"],
-                soft_targets=vis_batch["soft_mask"],
-                predictions=vis_prob.cpu(),
-                num_samples=cfg.num_vis_samples,
-                min_brightness=cfg.min_brightness,
-            )
+                    vis_images_list.append(vis_batch["image"])
+                    vis_masks_list.append(b_masks)
+                    vis_soft_list.append(s_masks)
+                    vis_pred_list.append(preds)
+
+                    total_collected += imgs.size(0)
+                    if total_collected >= cfg.num_vis_samples:
+                        break
+
+            if vis_images_list:
+                all_vis_imgs = torch.cat(vis_images_list, dim=0)[:cfg.num_vis_samples]
+                all_vis_masks = torch.cat(vis_masks_list, dim=0)[:cfg.num_vis_samples]
+                all_vis_soft = torch.cat(vis_soft_list, dim=0)[:cfg.num_vis_samples]
+                all_vis_preds = torch.cat(vis_pred_list, dim=0)[:cfg.num_vis_samples]
+
+                save_training_visualization(
+                    vis_dir / f"epoch_{epoch:04d}.jpg",
+                    images=all_vis_imgs,
+                    binary_masks=all_vis_masks,
+                    soft_targets=all_vis_soft,
+                    predictions=all_vis_preds,
+                    num_samples=cfg.num_vis_samples,
+                    min_brightness=cfg.min_brightness,
+                )
 
     writer.close()
 

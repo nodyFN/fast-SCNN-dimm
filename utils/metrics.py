@@ -130,7 +130,11 @@ class MetricAccumulator:
 
         # Binary segmentation
         tp, fp, fn, tn = self._tp, self._fp, self._fn, self._tn
-        results["fg_iou"] = tp / (tp + fp + fn + eps)
+        fg_iou = tp / (tp + fp + fn + eps)
+        bg_iou = tn / (tn + fp + fn + eps)
+        results["fg_iou"] = fg_iou
+        results["bg_iou"] = bg_iou
+        results["miou"] = (fg_iou + bg_iou) / 2.0
         results["dice"] = (2 * tp) / (2 * tp + fp + fn + eps)
         results["precision"] = tp / (tp + fp + eps)
         results["recall"] = tp / (tp + fn + eps)
@@ -180,6 +184,7 @@ def format_metrics(metrics: Dict[str, float]) -> str:
     # Binary segmentation
     lines.append("\n--- Binary Segmentation (threshold=0.5) ---")
     lines.append(f"  Foreground IoU     : {metrics.get('fg_iou', 0):.4f}")
+    lines.append(f"  Mean IoU (mIoU)    : {metrics.get('miou', 0):.4f}")
     lines.append(f"  Dice               : {metrics.get('dice', 0):.4f}")
     lines.append(f"  Precision          : {metrics.get('precision', 0):.4f}")
     lines.append(f"  Recall             : {metrics.get('recall', 0):.4f}")
