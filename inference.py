@@ -35,6 +35,7 @@ from config import Config
 from models.fast_scnn_dimming import FastSCNNDimming
 from utils.checkpoint import load_checkpoint
 from utils.visualization import (
+    add_panel_label,
     create_dimmed_preview,
     mask_to_heatmap,
     protection_to_brightness,
@@ -154,10 +155,9 @@ def save_outputs(
         prob_display = prob
         display_image = cv2.resize(image_bgr, (model_w, model_h), interpolation=cv2.INTER_LINEAR)
 
-    h, w = prob_display.shape
-
-    # 1. Soft mask grayscale
+    # 1. Soft mask grayscale (0~255)
     soft_gray = (np.clip(prob_display, 0, 1) * 255).astype(np.uint8)
+    cv2.imwrite(str(output_dir / f"{stem}_soft_gray.png"), soft_gray)
     cv2.imwrite(str(output_dir / f"{stem}_soft_mask.png"), soft_gray)
 
     # 2. Binary threshold visualization
@@ -172,17 +172,19 @@ def save_outputs(
     dimmed = create_dimmed_preview(display_image, prob_display, min_brightness)
     cv2.imwrite(str(output_dir / f"{stem}_dimmed.jpg"), dimmed)
 
-    # 5. Side-by-side comparison
-    panel_orig = display_image.copy()
-    panel_binary = cv2.cvtColor(binary_vis, cv2.COLOR_GRAY2BGR)
-    panel_heatmap = heatmap
-    brightness_map = mask_to_heatmap(
-        protection_to_brightness(prob_display, min_brightness)
+    # 5. Side-by-side comparison (with labeled headers)
+    panel_orig = add_panel_label(display_image.copy(), "Original RGB")
+    panel_binary = add_panel_label(cv2.cvtColor(binary_vis, cv2.COLOR_GRAY2BGR), f"Binary (>={threshold})")
+    panel_gray = add_panel_label(cv2.cvtColor(soft_gray, cv2.COLOR_GRAY2BGR), "Soft Mask (Gray)")
+    panel_heatmap = add_panel_label(heatmap, "Soft Mask (Heatmap)")
+    brightness_map = add_panel_label(
+        mask_to_heatmap(protection_to_brightness(prob_display, min_brightness)),
+        "Brightness Map",
     )
-    panel_dimmed = dimmed
+    panel_dimmed = add_panel_label(dimmed, "Dimmed Preview")
 
     side_by_side = np.concatenate(
-        [panel_orig, panel_binary, panel_heatmap, brightness_map, panel_dimmed],
+        [panel_orig, panel_binary, panel_gray, panel_heatmap, brightness_map, panel_dimmed],
         axis=1,
     )
     cv2.imwrite(str(output_dir / f"{stem}_comparison.jpg"), side_by_side)
