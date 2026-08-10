@@ -101,8 +101,6 @@ class DimmingDataset(Dataset):
         soft_target_mode: str = "cosine",
         is_train: bool = True,
         allow_threshold: bool = False,
-        aug_scale_min: float = 0.75,
-        aug_scale_max: float = 1.25,
         aug_brightness_limit: float = 0.2,
         aug_contrast_limit: float = 0.2,
         aug_hflip_p: float = 0.5,
@@ -137,10 +135,8 @@ class DimmingDataset(Dataset):
         # Build augmentation pipeline
         self.transform = self._build_transform(
             is_train=is_train,
-            aug_scale_min=aug_scale_min,
-            aug_scale_max=aug_scale_max,
             aug_brightness_limit=aug_brightness_limit,
-            aug_contrast_limit=aug_contrast_limit,
+            contrast_limit=aug_contrast_limit,
             aug_hflip_p=aug_hflip_p,
         )
 
@@ -169,45 +165,37 @@ class DimmingDataset(Dataset):
     def _build_transform(
         self,
         is_train: bool,
-        aug_scale_min: float,
-        aug_scale_max: float,
         aug_brightness_limit: float,
-        aug_contrast_limit: float,
+        contrast_limit: float,
         aug_hflip_p: float,
     ) -> A.Compose:
         """Build Albumentations transform pipeline.
 
         IMPORTANT ordering:
-        1. Geometric augmentations (scale, crop, flip) — joint on image+mask
-        2. Resize to target resolution — mask uses nearest interpolation
+        1. Full-frame resize to target resolution (H x W)
+           - Image uses cv2.INTER_LINEAR
+           - Mask uses cv2.INTER_NEAREST (preserves binary values)
+        2. Horizontal flip
         3. Color augmentations (brightness, contrast) — image only
         4. Normalize — image only
         5. ToTensor
+        6. Soft target is generated from the FINAL binary mask after all transforms
         """
         if is_train:
             return A.Compose([
-                # Scale + crop: random scale then random crop to target size
-                A.RandomScale(
-                    scale_limit=(aug_scale_min - 1.0, aug_scale_max - 1.0),
-                    p=1.0,
-                ),
-                A.PadIfNeeded(
-                    min_height=self.height,
-                    min_width=self.width,
-                    border_mode=cv2.BORDER_CONSTANT,
-                    value=0,
-                    mask_value=0,
-                ),
-                A.RandomCrop(
+                # Full-frame resize: matches inference distribution
+                A.Resize(
                     height=self.height,
                     width=self.width,
+                    interpolation=cv2.INTER_LINEAR,
+                    mask_interpolation=cv2.INTER_NEAREST,
                 ),
                 # Horizontal flip
                 A.HorizontalFlip(p=aug_hflip_p),
                 # Color augmentations (image only, not mask)
                 A.RandomBrightnessContrast(
                     brightness_limit=aug_brightness_limit,
-                    contrast_limit=aug_contrast_limit,
+                    contrast_limit=contrast_limit,
                     p=0.5,
                 ),
                 # Normalize
@@ -223,6 +211,7 @@ class DimmingDataset(Dataset):
                     height=self.height,
                     width=self.width,
                     interpolation=cv2.INTER_LINEAR,
+                    mask_interpolation=cv2.INTER_NEAREST,
                 ),
                 A.Normalize(
                     mean=(0.485, 0.456, 0.406),
@@ -326,8 +315,6 @@ def build_dataloaders(
     transition_width: int = 8,
     soft_target_mode: str = "cosine",
     allow_threshold: bool = False,
-    aug_scale_min: float = 0.75,
-    aug_scale_max: float = 1.25,
     aug_brightness_limit: float = 0.2,
     aug_contrast_limit: float = 0.2,
     aug_hflip_p: float = 0.5,
@@ -362,8 +349,6 @@ def build_dataloaders(
             soft_target_mode=soft_target_mode,
             is_train=is_train,
             allow_threshold=allow_threshold,
-            aug_scale_min=aug_scale_min,
-            aug_scale_max=aug_scale_max,
             aug_brightness_limit=aug_brightness_limit,
             aug_contrast_limit=aug_contrast_limit,
             aug_hflip_p=aug_hflip_p,

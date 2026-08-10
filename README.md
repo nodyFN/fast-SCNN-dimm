@@ -202,6 +202,34 @@ python inspect_soft_target.py --data-root duts_data --num-samples 5 --compare
 
 ---
 
+## V1 Training Policy
+
+### Full-Frame Training
+Training uses full-frame resize to `(train_height, train_width)` with `cv2.INTER_LINEAR` for images and `cv2.INTER_NEAREST` for binary masks. It does **not** use random cropping:
+
+```text
+Load RGB + binary mask
+        ↓
+Resize entire frame to train_height × train_width (mask: nearest-neighbor)
+        ↓
+HorizontalFlip
+        ↓
+Brightness / Contrast augmentation
+        ↓
+Normalize (ImageNet mean/std)
+        ↓
+ToTensor
+        ↓
+Generate soft target from FINAL binary mask at full model resolution
+```
+
+**Rationale:**
+The target application is whole-scene TV background dimming. Random cropping presents local object patches out of global context, creating a distribution mismatch between training and full-frame inference.
+
+*Future Augmentation:* Spatial augmentations (e.g. scale/crop) that preserve global scene context are reserved for future ablation studies.
+
+---
+
 ## Loss
 
 ```
@@ -218,63 +246,95 @@ L_total = λ_bce × L_bce + λ_l1 × L_l1 + λ_protect × L_protect
 
 ---
 
-## Metrics
+## Metrics & Checkpoint Interpretation
 
-### Binary Segmentation (threshold=0.5)
-- Foreground IoU, Dice, Precision, Recall
+### Metrics Overview
+- **Binary Segmentation (threshold=0.5):** Foreground IoU, Dice, Precision, Recall
+- **Soft Mask Quality:** MAE, MSE (predicted probability vs soft target)
+- **Foreground Protection:** Mean protection, under-protection error, under-protection rate @0.9
+- **Far-Background Leakage:** `mean(prob[soft_target == 0])` (strictly far background, excluding transition)
 
-### Soft Mask Quality
-- MAE, MSE (pred prob vs soft target)
+### Metric Interpretation in Dimming Context
+> **Important:** Binary IoU / Precision against original binary GT should **not** be the sole metric for model selection.
+>
+> The soft target intentionally introduces a protection dilation zone ($M=1.0$) and transition feathering ($0 < M < 1.0$) outside the original foreground. A model predicting high protection in this safety zone will be penalized as "False Positive" in standard binary segmentation metrics, even though this is desirable behavior for TV backlight dimming.
 
-### Foreground Protection
-- **Mean foreground protection**: `mean(prob[binary_gt == 1])` — closer to 1 is better
-- **Under-protection error**: `mean(1 - prob[binary_gt == 1])` — lower is better
-- **Under-protection rate @0.9**: ratio of `prob < 0.9` in foreground — lower is better
-
-### Far-Background Leakage
-- `mean(prob[soft_target == 0])` — only far background, excluding transition
+### Checkpoint Selection Strategy
+Checkpoints saved to `checkpoints/<timestamp>/`:
+- **`best_val_loss.pt`** & **`best_soft_mae.pt`**: Primary checkpoints for deployment and baseline comparison.
+- **`best_fg_protection.pt`**: Diagnostic checkpoint. A degenerate model predicting $M=1$ everywhere achieves perfect foreground protection ($1.0$) but has $100\%$ far-background leakage and zero power-saving capability. Always inspect alongside `far_bg_leakage` and `soft_mae`.
+- **`latest.pt`**: Saved every epoch, guaranteed to record the latest best metrics for clean resumption.
 
 ---
 
-## Training
+## Training Commands
+
+### 5-Epoch Sanity Training
+Quick sanity run to verify the training and validation pipeline:
 
 ```bash
-# Default training
-python train.py --data-root duts_data
-
-# Full customization
 python train.py \
   --data-root duts_data \
   --train-height 128 \
   --train-width 224 \
+  --val-height 128 \
+  --val-width 224 \
   --batch-size 16 \
-  --epochs 200 \
+  --epochs 5 \
+  --optimizer adamw \
   --learning-rate 1e-3 \
+  --weight-decay 1e-4 \
+  --scheduler poly \
+  --poly-power 0.9 \
   --lambda-bce 1.0 \
   --lambda-l1 1.0 \
   --lambda-protect 2.0 \
   --protection-radius 2 \
   --transition-width 8 \
+  --soft-target-mode cosine \
+  --checkpoint-save-interval 1 \
   --seed 42
-
-# Smoke test (no dataset needed)
-python train.py --smoke-test
 ```
 
-### Checkpoints
+### 200-Epoch Formal Baseline Training
+Full baseline training on DUTS:
 
-Saved to `checkpoints/<timestamp>/`:
-- `latest.pt` — always saved
-- `best_val_loss.pt` — best validation loss
-- `best_fg_protection.pt` — best foreground mean protection
-- `best_soft_mae.pt` — best soft MAE
+```bash
+python train.py \
+  --data-root duts_data \
+  --train-height 128 \
+  --train-width 224 \
+  --val-height 128 \
+  --val-width 224 \
+  --batch-size 16 \
+  --epochs 200 \
+  --optimizer adamw \
+  --learning-rate 1e-3 \
+  --weight-decay 1e-4 \
+  --scheduler poly \
+  --poly-power 0.9 \
+  --lambda-bce 1.0 \
+  --lambda-l1 1.0 \
+  --lambda-protect 2.0 \
+  --protection-radius 2 \
+  --transition-width 8 \
+  --soft-target-mode cosine \
+  --checkpoint-save-interval 10 \
+  --seed 42
+```
 
-Periodic saving: `--checkpoint-save-interval N` (save every N epochs)
+*(Note: If GPU memory is limited, use `--batch-size 8`, `4`, or `2`. Do not use batch size 1 due to PPM BatchNorm constraints.)*
 
 ### Resume Training
 
 ```bash
 python train.py --data-root duts_data --resume checkpoints/<timestamp>/latest.pt
+```
+
+### Smoke Test (No Dataset Needed)
+
+```bash
+python train.py --smoke-test
 ```
 
 ### TensorBoard
@@ -306,7 +366,7 @@ Outputs JSON summary to `evaluation_results/`.
 ## Inference
 
 ```bash
-# Single image
+# Single image (auto-resolves resolution from checkpoint config)
 python inference.py \
   --weights checkpoints/<timestamp>/best_val_loss.pt \
   --input photo.jpg
@@ -344,11 +404,12 @@ pytest tests/ -v
 
 | Test file | What it tests |
 |---|---|
-| `test_model.py` | Feature shapes at every stage, H/W checks, gradient flow |
-| `test_soft_target.py` | Range, foreground preservation, direction, edge cases |
-| `test_losses.py` | Loss behavior, empty foreground, backward pass |
-| `test_dataset.py` | Mask formats, output shapes, binary/soft sync |
-| `test_metrics.py` | Metric correctness with known inputs |
+| `test_model.py` | Feature shapes at every stage, H/W checks, gradient flow, custom resolution |
+| `test_soft_target.py` | Range, foreground preservation, direction, distance monotonicity, edge cases |
+| `test_losses.py` | Loss behavior, under-protection penalty, empty foreground, backward pass |
+| `test_dataset.py` | Full-frame resize, mask nearest interpolation, {0,1}/{0,255}, shapes, dtypes |
+| `test_metrics.py` | Metric correctness with known inputs, accumulation, reset |
+| `test_checkpoint.py` | Checkpoint save/load, multi-epoch resume and best metrics bookkeeping |
 
 ---
 

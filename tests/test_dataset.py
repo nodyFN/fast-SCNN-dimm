@@ -216,3 +216,49 @@ class TestFinalShape:
         _, h, w = sample["image"].shape
         assert h == 128 and w == 224, f"Expected (128, 224), got ({h}, {w})"
         assert h < w, "H should be < W for landscape input"
+
+    def test_custom_hw_resolution(self, synthetic_dataset_01):
+        """Verify custom H/W resolution (e.g. 96x160) without hardcoded 128x224."""
+        custom_h, custom_w = 96, 160
+        ds_train = DimmingDataset(
+            root=synthetic_dataset_01, height=custom_h, width=custom_w, is_train=True
+        )
+        sample = ds_train[0]
+        assert sample["image"].shape == (3, custom_h, custom_w)
+        assert sample["binary_mask"].shape == (1, custom_h, custom_w)
+        assert sample["soft_mask"].shape == (1, custom_h, custom_w)
+
+        ds_val = DimmingDataset(
+            root=synthetic_dataset_01, height=custom_h, width=custom_w, is_train=False
+        )
+        sample_val = ds_val[0]
+        assert sample_val["image"].shape == (3, custom_h, custom_w)
+        assert sample_val["binary_mask"].shape == (1, custom_h, custom_w)
+        assert sample_val["soft_mask"].shape == (1, custom_h, custom_w)
+
+    def test_mask_nearest_neighbor_interpolation(self, tmp_path):
+        """Verify that mask resize strictly uses nearest neighbor and produces ONLY {0.0, 1.0}."""
+        img_dir = tmp_path / "images"
+        mask_dir = tmp_path / "masks"
+        img_dir.mkdir()
+        mask_dir.mkdir()
+
+        # Create image and fine checkerboard pattern mask to test interpolation
+        img = np.random.randint(0, 255, (200, 300, 3), dtype=np.uint8)
+        cv2.imwrite(str(img_dir / "sample_diag.jpg"), img)
+
+        # Diagonal line mask
+        mask = np.zeros((200, 300), dtype=np.uint8)
+        for r in range(200):
+            mask[r, int(r * 1.5)] = 1
+        cv2.imwrite(str(mask_dir / "sample_diag.png"), mask)
+
+        # Test both train and val transforms
+        for is_train in [True, False]:
+            ds = DimmingDataset(
+                root=tmp_path, height=128, width=224, is_train=is_train
+            )
+            sample = ds[0]
+            binary_vals = sample["binary_mask"].unique().tolist()
+            for v in binary_vals:
+                assert v in [0.0, 1.0], f"Found non-binary value {v} in mask (is_train={is_train})"

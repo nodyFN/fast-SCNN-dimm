@@ -229,3 +229,12 @@ class TestFastSCNNDimming:
         loss = out.sum()
         loss.backward()
         assert x.grad is not None, "No gradient on input"
+
+    def test_custom_resolution(self):
+        """Verify model handles other landscape resolutions (e.g. 96x160)."""
+        model = FastSCNNDimming()
+        model.eval()
+        x = torch.randn(2, 3, 96, 160)
+        with torch.no_grad():
+            out = model(x)
+        assert out.shape == (2, 1, 96, 160), f"Expected [2, 1, 96, 160], got {list(out.shape)}"

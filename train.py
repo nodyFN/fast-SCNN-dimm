@@ -299,16 +299,17 @@ def run_smoke_test(cfg: Config) -> None:
     for name, value in results.items():
         logger.info(f"   {name}: {value:.4f}")
 
-    # 7. Checkpoint save/load
-    logger.info("\n7. Checkpoint save/load...")
+    # 7. Checkpoint save/load and resume verification
+    logger.info("\n7. Checkpoint save/load & resume verification...")
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
-        ckpt_path = Path(tmpdir) / "smoke_test.pt"
+        ckpt_path = Path(tmpdir) / "latest.pt"
         scheduler = build_scheduler(
             cfg.scheduler, optimizer,
             total_iters=100, epochs=cfg.epochs,
             poly_power=cfg.poly_power,
         )
+        # Epoch 0: save initial best
         save_checkpoint(
             ckpt_path,
             epoch=0,
@@ -316,21 +317,43 @@ def run_smoke_test(cfg: Config) -> None:
             model=model,
             optimizer=optimizer,
             scheduler=scheduler,
+            best_val_loss=0.5,
+            best_fg_protection=0.90,
+            best_soft_mae=0.05,
+            config=asdict(cfg),
+            seed=cfg.seed,
+        )
+        # Epoch 1: update best metrics and save latest.pt
+        save_checkpoint(
+            ckpt_path,
+            epoch=1,
+            global_step=2,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            best_val_loss=0.4,
+            best_fg_protection=0.95,
+            best_soft_mae=0.03,
             config=asdict(cfg),
             seed=cfg.seed,
         )
         assert ckpt_path.exists()
-        logger.info(f"   saved: {ckpt_path}")
 
-        # Load
+        # Load and verify latest.pt contains the updated best metrics
         model2 = FastSCNNDimming(
             ppm_pool_sizes=cfg.ppm_pool_sizes,
             dropout_p=cfg.dropout_p,
         ).to(device)
         ckpt = load_checkpoint(ckpt_path, model2)
-        assert ckpt["epoch"] == 0
-        assert ckpt["global_step"] == 1
-        logger.info(f"   loaded: epoch={ckpt['epoch']}, step={ckpt['global_step']} ✓")
+        assert ckpt["epoch"] == 1
+        assert ckpt["global_step"] == 2
+        assert abs(ckpt["best_val_loss"] - 0.4) < 1e-6, f"Expected 0.4, got {ckpt['best_val_loss']}"
+        assert abs(ckpt["best_fg_protection"] - 0.95) < 1e-6
+        assert abs(ckpt["best_soft_mae"] - 0.03) < 1e-6
+        logger.info(
+            f"   loaded latest.pt: epoch={ckpt['epoch']}, step={ckpt['global_step']}, "
+            f"best_val_loss={ckpt['best_val_loss']} ✓"
+        )
 
     logger.info("\n" + "=" * 60)
     logger.info("SMOKE TEST PASSED ✓")
@@ -532,6 +555,13 @@ def main() -> None:
     logger.info(f"Input resolution: H={cfg.train_height}, W={cfg.train_width}")
     logger.info(f"PyTorch input shape: [B, 3, {cfg.train_height}, {cfg.train_width}]")
 
+    # Batch size guard
+    if cfg.batch_size == 1:
+        raise ValueError(
+            "Batch size 1 is not supported by the current PPM BatchNorm configuration. "
+            "Please use batch_size >= 2."
+        )
+
     # Build dataloaders
     loaders = build_dataloaders(
         data_root=cfg.data_root,
@@ -547,8 +577,6 @@ def main() -> None:
         transition_width=cfg.transition_width,
         soft_target_mode=cfg.soft_target_mode,
         allow_threshold=cfg.allow_threshold,
-        aug_scale_min=cfg.aug_scale_min,
-        aug_scale_max=cfg.aug_scale_max,
         aug_brightness_limit=cfg.aug_brightness_limit,
         aug_contrast_limit=cfg.aug_contrast_limit,
         aug_hflip_p=cfg.aug_hflip_p,
@@ -692,26 +720,38 @@ def main() -> None:
                 seed=cfg.seed,
             )
 
-        # Save latest
-        _save("latest")
+        # Step 1: Update best metrics and set flags
+        is_best_val = False
+        is_best_fg = False
+        is_best_soft = False
 
-        # Save best val loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            _save("best_val_loss")
-            logger.info(f"  → New best val_loss: {best_val_loss:.4f}")
+            is_best_val = True
 
-        # Save best foreground protection
         fg_prot = val_metrics["fg_mean_protection"]
         if fg_prot > best_fg_protection:
             best_fg_protection = fg_prot
-            _save("best_fg_protection")
-            logger.info(f"  → New best fg_protection: {best_fg_protection:.4f}")
+            is_best_fg = True
 
-        # Save best soft MAE
         soft_mae = val_metrics["soft_mae"]
         if soft_mae < best_soft_mae:
             best_soft_mae = soft_mae
+            is_best_soft = True
+
+        # Step 2: Save latest checkpoint (always includes latest best metrics)
+        _save("latest")
+
+        # Step 3: Save individual best checkpoints when a new best is achieved
+        if is_best_val:
+            _save("best_val_loss")
+            logger.info(f"  → New best val_loss: {best_val_loss:.4f}")
+
+        if is_best_fg:
+            _save("best_fg_protection")
+            logger.info(f"  → New best fg_protection: {best_fg_protection:.4f}")
+
+        if is_best_soft:
             _save("best_soft_mae")
             logger.info(f"  → New best soft_mae: {best_soft_mae:.4f}")
 

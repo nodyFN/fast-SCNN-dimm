@@ -92,11 +92,24 @@ def main() -> None:
     # Try to restore config from checkpoint
     saved_config = ckpt.get("config", {})
     if saved_config:
-        if args.protection_radius is None and "protection_radius" in saved_config:
-            cfg.protection_radius = saved_config["protection_radius"]
-        if args.transition_width is None and "transition_width" in saved_config:
-            cfg.transition_width = saved_config["transition_width"]
+        if args.val_height is None and "val_height" in saved_config:
+            cfg.val_height = int(saved_config["val_height"])
+        elif args.val_height is None and "train_height" in saved_config:
+            cfg.val_height = int(saved_config["train_height"])
 
+        if args.val_width is None and "val_width" in saved_config:
+            cfg.val_width = int(saved_config["val_width"])
+        elif args.val_width is None and "train_width" in saved_config:
+            cfg.val_width = int(saved_config["train_width"])
+
+        if args.protection_radius is None and "protection_radius" in saved_config:
+            cfg.protection_radius = int(saved_config["protection_radius"])
+        if args.transition_width is None and "transition_width" in saved_config:
+            cfg.transition_width = int(saved_config["transition_width"])
+        if "soft_target_mode" in saved_config:
+            cfg.soft_target_mode = str(saved_config["soft_target_mode"])
+
+    logger.info(f"Resolution for evaluation: H={cfg.val_height}, W={cfg.val_width}")
     total_params, trainable_params = count_parameters(model)
     logger.info(f"Model parameters: {total_params:,}")
 

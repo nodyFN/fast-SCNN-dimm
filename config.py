@@ -116,8 +116,6 @@ class Config:
     min_brightness: float = 0.5        # For dimming simulation
 
     # ── Augmentation ──────────────────────────────────────────────────
-    aug_scale_min: float = 0.75
-    aug_scale_max: float = 1.25
     aug_brightness_limit: float = 0.2
     aug_contrast_limit: float = 0.2
     aug_hflip_p: float = 0.5

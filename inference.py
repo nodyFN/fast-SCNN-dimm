@@ -59,8 +59,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weights", type=str, required=True, help="Path to checkpoint")
     p.add_argument("--input", type=str, required=True, help="Input image or folder")
     p.add_argument("--output-dir", type=str, default=None)
-    p.add_argument("--height", type=int, default=128)
-    p.add_argument("--width", type=int, default=224)
+    p.add_argument("--height", type=int, default=None,
+                   help="Input height (default: auto from checkpoint or 128)")
+    p.add_argument("--width", type=int, default=None,
+                   help="Input width (default: auto from checkpoint or 224)")
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--min-brightness", type=float, default=0.5)
     p.add_argument("--threshold", type=float, default=0.5,
@@ -204,6 +206,16 @@ def main() -> None:
     model.eval()
     logger.info(f"Loaded weights from: {args.weights}")
 
+    # Auto-resolve inference resolution from checkpoint or fallback
+    saved_config = ckpt.get("config", {})
+    infer_h = args.height if args.height is not None else int(
+        saved_config.get("val_height", saved_config.get("train_height", 128))
+    )
+    infer_w = args.width if args.width is not None else int(
+        saved_config.get("val_width", saved_config.get("train_width", 224))
+    )
+    logger.info(f"Resolution for inference: H={infer_h}, W={infer_w}")
+
     # Find images
     input_path = Path(args.input)
     images = find_images(input_path)
@@ -224,7 +236,7 @@ def main() -> None:
             logger.warning(f"Failed to load: {img_path}")
             continue
 
-        prob = run_inference(model, image_bgr, args.height, args.width, device)
+        prob = run_inference(model, image_bgr, infer_h, infer_w, device)
 
         save_outputs(
             output_dir=output_dir,
