@@ -56,6 +56,7 @@ class Config:
     transition_width: int = 8           # Cosine feather width in pixels
 
     # ── Model ─────────────────────────────────────────────────────────
+    num_classes: int = 1               # Default 1 (binary dimming), >1 for multiclass pretraining
     # [PROJECT DECISION] PPM pool sizes — paper does not specify for Fast-SCNN
     ppm_pool_sizes: Tuple[int, ...] = (1, 2, 3, 6)
     # [PROJECT DECISION] Dropout in classifier
@@ -80,7 +81,7 @@ class Config:
     gradient_clip_enabled: bool = True
 
     # ── Loss weights ──────────────────────────────────────────────────
-    # [PROJECT DECISION] BCE + L1 + Foreground Protection
+    # [PROJECT DECISION] BCE + L1 + Foreground Protection (for num_classes == 1)
     lambda_bce: float = 1.0
     lambda_l1: float = 1.0
     lambda_protect: float = 2.0
@@ -103,8 +104,9 @@ class Config:
     # ── Device ────────────────────────────────────────────────────────
     device: str = "auto"               # "auto" | "cuda" | "cpu"
 
-    # ── Checkpoint resume ─────────────────────────────────────────────
-    resume: Optional[str] = None       # Path to checkpoint to resume from
+    # ── Transfer learning & Checkpoint resume ─────────────────────────
+    pretrained: Optional[str] = None   # Path to pretrained weights (e.g. COCO-Stuff / ADE20K backbone)
+    resume: Optional[str] = None       # Path to checkpoint to resume full training from
 
     # ── ONNX export ───────────────────────────────────────────────────
     # [PROJECT DECISION] opset 17 — good PyTorch/TensorRT compatibility

@@ -262,3 +262,28 @@ class TestFinalShape:
             binary_vals = sample["binary_mask"].unique().tolist()
             for v in binary_vals:
                 assert v in [0.0, 1.0], f"Found non-binary value {v} in mask (is_train={is_train})"
+
+
+class TestMatToPngConversion:
+    """Test convert_mat_to_png utility."""
+
+    def test_single_file_conversion(self, tmp_path):
+        import scipy.io as sio
+        from convert_mat_to_png import convert_single_file
+
+        mat_file = tmp_path / "sample.mat"
+        out_png = tmp_path / "sample.png"
+
+        # Create dummy COCO-Stuff segmentation mask (182 classes)
+        dummy_mask = np.random.randint(0, 182, (128, 224), dtype=np.uint8)
+        sio.savemat(str(mat_file), {"S": dummy_mask})
+
+        success, err, stats = convert_single_file(mat_file, out_png)
+        assert success is True
+        assert err is None
+        assert out_png.exists()
+
+        # Read back PNG and verify pixel values match exactly
+        loaded_img = Image.open(str(out_png))
+        loaded_arr = np.array(loaded_img)
+        assert np.array_equal(loaded_arr, dummy_mask)

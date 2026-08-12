@@ -144,3 +144,30 @@ class TestDimmingLoss:
         losses = criterion(logits, soft_target, binary_mask)
         for key, val in losses.items():
             assert not torch.isnan(val), f"NaN in {key}"
+
+
+class TestMulticlassLoss:
+    """Test multiclass segmentation loss and criterion builder."""
+
+    def test_multiclass_ce_loss(self):
+        from utils.losses import MulticlassCrossEntropyLoss
+
+        loss_fn = MulticlassCrossEntropyLoss(ignore_index=255)
+        logits = torch.randn(2, 150, 32, 32, requires_grad=True)
+        targets = torch.randint(0, 150, (2, 32, 32))
+        targets[0, :5, :5] = 255  # test ignore_index
+
+        res = loss_fn(logits, targets)
+        assert "total" in res
+        assert res["total"].item() > 0
+        res["total"].backward()
+        assert logits.grad is not None
+
+    def test_build_criterion(self):
+        from utils.losses import DimmingLoss, MulticlassCrossEntropyLoss, build_criterion
+
+        crit_binary = build_criterion(num_classes=1)
+        assert isinstance(crit_binary, DimmingLoss)
+
+        crit_multi = build_criterion(num_classes=182)
+        assert isinstance(crit_multi, MulticlassCrossEntropyLoss)

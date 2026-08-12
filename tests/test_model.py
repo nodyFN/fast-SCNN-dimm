@@ -246,3 +246,18 @@ class TestFastSCNNDimming:
         assert len(records) > 0
         assert total_params > 0
         assert total_macs > 0
+
+    def test_multiclass_output(self):
+        """Verify model supports multiclass output (e.g. COCO-Stuff 182, ADE20K 150)."""
+        model_coco = FastSCNNDimming(num_classes=182)
+        model_coco.eval()
+        x = torch.randn(2, 3, 128, 224)
+        with torch.no_grad():
+            out_coco = model_coco(x)
+        assert out_coco.shape == (2, 182, 128, 224)
+
+        model_ade = FastSCNNDimming(num_classes=150)
+        model_ade.eval()
+        with torch.no_grad():
+            out_ade = model_ade(x)
+        assert out_ade.shape == (2, 150, 128, 224)

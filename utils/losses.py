@@ -135,3 +135,71 @@ class DimmingLoss(nn.Module):
             "l1": loss_l1,
             "protect": loss_protect,
         }
+
+
+class MulticlassCrossEntropyLoss(nn.Module):
+    """Standard CrossEntropyLoss for multiclass semantic segmentation pretraining (COCO-Stuff / ADE20K).
+
+    Parameters
+    ----------
+    ignore_index : int
+        Class label index to ignore (default: 255).
+    """
+
+    def __init__(self, ignore_index: int = 255) -> None:
+        super().__init__()
+        self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        soft_target: torch.Tensor,
+        binary_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Parameters
+        ----------
+        logits : Tensor [B, num_classes, H, W]
+        soft_target : Tensor [B, 1, H, W] or [B, H, W]
+            Integer class indices.
+        binary_mask : optional Tensor, ignored in multiclass mode.
+
+        Returns
+        -------
+        dict with keys: "total", "ce", "bce", "l1", "protect"
+        """
+        targets = soft_target
+        if targets.dim() == 4 and targets.shape[1] == 1:
+            targets = targets.squeeze(1)
+        targets = targets.long()
+
+        loss_ce = self.ce_loss(logits, targets)
+        zero = torch.tensor(0.0, device=logits.device)
+        return {
+            "total": loss_ce,
+            "ce": loss_ce,
+            "bce": loss_ce,
+            "l1": zero,
+            "protect": zero,
+        }
+
+
+def build_criterion(
+    num_classes: int = 1,
+    lambda_bce: float = 1.0,
+    lambda_l1: float = 1.0,
+    lambda_protect: float = 2.0,
+    ignore_index: int = 255,
+) -> nn.Module:
+    """Build appropriate loss criterion based on num_classes.
+
+    - num_classes == 1: DimmingLoss (BCE + L1 + Foreground Protection)
+    - num_classes > 1: MulticlassCrossEntropyLoss (CrossEntropy with ignore_index=255)
+    """
+    if num_classes > 1:
+        return MulticlassCrossEntropyLoss(ignore_index=ignore_index)
+    return DimmingLoss(
+        lambda_bce=lambda_bce,
+        lambda_l1=lambda_l1,
+        lambda_protect=lambda_protect,
+    )

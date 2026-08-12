@@ -325,6 +325,39 @@ python train.py \
 
 *(Note: If GPU memory is limited, use `--batch-size 8`, `4`, or `2`. Do not use batch size 1 due to PPM BatchNorm constraints.)*
 
+### Multi-Stage Pretraining & Transfer Learning Pipeline
+
+The codebase supports transfer learning across datasets with different class counts (e.g. COCO-Stuff $\to$ ADE20K $\to$ Binary Dimming). Shape-mismatched classifier layers are automatically skipped and re-initialized while the entire backbone is cleanly transferred:
+
+#### Step 1: Pretrain Backbone on COCO-Stuff (e.g. 182 classes)
+```bash
+python train.py \
+  --data-root path/to/coco_stuff \
+  --num-classes 182 \
+  --batch-size 16 \
+  --epochs 100
+```
+
+#### Step 2: Continue Pretraining on ADE20K (150 classes) using Pretrained COCO Backbone
+```bash
+python train.py \
+  --data-root path/to/ade20k \
+  --num-classes 150 \
+  --pretrained checkpoints/<coco_timestamp>/best_val_loss.pt \
+  --batch-size 16 \
+  --epochs 100
+```
+
+#### Step 3: Fine-tune for Foreground Protection Dimming (Binary, 1 class)
+```bash
+python train.py \
+  --data-root duts_data \
+  --num-classes 1 \
+  --pretrained checkpoints/<ade_timestamp>/best_val_loss.pt \
+  --batch-size 16 \
+  --epochs 200
+```
+
 ### Resume Training
 
 ```bash

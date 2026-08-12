@@ -477,9 +477,9 @@ class Classifier(nn.Module):
         DSConv 128→128 (stride 1)
         DSConv 128→128 (stride 1)
         Dropout  [PROJECT DECISION: p=0.1]
-        1×1 Conv 128→1  [PROJECT DECISION: single-channel output for BCE]
+        1×1 Conv 128→num_classes (default 1 for binary dimming, >1 for multiclass pretraining)
 
-    Output is raw logits — no sigmoid.
+    Output is raw logits — no sigmoid or softmax applied.
     """
 
     def __init__(
@@ -511,6 +511,10 @@ class FastSCNNDimming(nn.Module):
 
     Parameters
     ----------
+    num_classes : int
+        Number of output channels / classes.
+        Default = 1 (binary foreground dimming mask).
+        Set > 1 for multiclass semantic segmentation pretraining (e.g. COCO-Stuff, ADE20K).
     ppm_pool_sizes : tuple of int
         Pool sizes for the Pyramid Pooling Module.
         [PROJECT DECISION] default = (1, 2, 3, 6).
@@ -520,16 +524,18 @@ class FastSCNNDimming(nn.Module):
 
     Output
     ------
-    raw logits : Tensor [B, 1, H, W]
-        No sigmoid applied.  Use ``torch.sigmoid(logits)`` for inference.
+    raw logits : Tensor [B, num_classes, H, W]
+        No activation applied.
     """
 
     def __init__(
         self,
+        num_classes: int = 1,
         ppm_pool_sizes: Tuple[int, ...] = (1, 2, 3, 6),
         dropout_p: float = 0.1,
     ) -> None:
         super().__init__()
+        self.num_classes = num_classes
 
         # Main backbone
         self.learning_to_downsample = LearningToDownsample()
@@ -543,7 +549,7 @@ class FastSCNNDimming(nn.Module):
             high_channels=64, low_channels=128, out_channels=128
         )
         self.classifier = Classifier(
-            in_channels=128, out_channels=1, dropout_p=dropout_p
+            in_channels=128, out_channels=num_classes, dropout_p=dropout_p
         )
 
         self._init_weights()

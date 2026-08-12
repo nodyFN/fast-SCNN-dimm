@@ -50,8 +50,8 @@ from torch.utils.tensorboard import SummaryWriter
 from config import Config
 from dataset import build_dataloaders
 from models.fast_scnn_dimming import FastSCNNDimming, count_parameters
-from utils.checkpoint import load_checkpoint, save_checkpoint
-from utils.losses import DimmingLoss
+from utils.checkpoint import load_checkpoint, load_pretrained_weights, save_checkpoint
+from utils.losses import DimmingLoss, build_criterion
 from utils.metrics import MetricAccumulator, format_metrics
 from utils.scheduler import build_scheduler
 from utils.seed import seed_everything
@@ -115,10 +115,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--soft-target-mode", type=str, default=None)
 
     # Model
+    p.add_argument("--num-classes", type=int, default=None,
+                   help="Number of output classes (default: 1 for binary dimming, >1 for multiclass pretraining)")
     p.add_argument("--dropout-p", type=float, default=None)
 
-    # Checkpoint
-    p.add_argument("--resume", type=str, default=None)
+    # Checkpoint & Transfer Learning
+    p.add_argument("--pretrained", type=str, default=None,
+                   help="Path to pretrained weights to initialize backbone (ignores classifier head shape mismatch)")
+    p.add_argument("--resume", type=str, default=None,
+                   help="Path to checkpoint to resume full training from")
     p.add_argument("--checkpoint-save-interval", type=int, default=None)
 
     # Mask
@@ -185,6 +190,10 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
         cfg.soft_target_mode = args.soft_target_mode
     if args.dropout_p is not None:
         cfg.dropout_p = args.dropout_p
+    if args.num_classes is not None:
+        cfg.num_classes = args.num_classes
+    if args.pretrained is not None:
+        cfg.pretrained = args.pretrained
     if args.resume is not None:
         cfg.resume = args.resume
     if args.checkpoint_save_interval is not None:
@@ -368,7 +377,7 @@ def run_smoke_test(cfg: Config) -> None:
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
-    criterion: DimmingLoss,
+    criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler,
     scaler: torch.amp.GradScaler,
@@ -459,7 +468,7 @@ def train_one_epoch(
 def validate(
     model: nn.Module,
     loader: DataLoader,
-    criterion: DimmingLoss,
+    criterion: nn.Module,
     device: torch.device,
     cfg: Config,
 ) -> tuple[float, dict]:
@@ -512,10 +521,12 @@ def main() -> None:
         run_smoke_test(cfg)
         return
 
-    # Seed
+    # Reproducibility
     seed_everything(cfg.seed, cfg.deterministic)
 
     # Device
+    if args.device:
+        cfg.device = args.device
     device = cfg.resolve_device()
     logger.info(f"Device: {device}")
 
@@ -547,13 +558,20 @@ def main() -> None:
 
     # Build model
     model = FastSCNNDimming(
+        num_classes=cfg.num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
     ).to(device)
     total_params, trainable_params = count_parameters(model)
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
+    logger.info(f"Number of classes (output channels): {cfg.num_classes}")
     logger.info(f"Input resolution: H={cfg.train_height}, W={cfg.train_width}")
     logger.info(f"PyTorch input shape: [B, 3, {cfg.train_height}, {cfg.train_width}]")
+
+    # Load pretrained backbone weights (e.g. from COCO-Stuff / ADE20K pretraining)
+    if cfg.pretrained:
+        logger.info(f"Loading pretrained backbone weights from: {cfg.pretrained}")
+        load_pretrained_weights(cfg.pretrained, model, map_location=device)
 
     # Batch size guard
     if cfg.batch_size == 1:
@@ -586,16 +604,22 @@ def main() -> None:
     logger.info(f"Train samples: {len(train_loader.dataset)}")
     logger.info(f"Val samples:   {len(val_loader.dataset)}")
 
-    # Loss
-    criterion = DimmingLoss(
+    # Loss criterion
+    criterion = build_criterion(
+        num_classes=cfg.num_classes,
         lambda_bce=cfg.lambda_bce,
         lambda_l1=cfg.lambda_l1,
         lambda_protect=cfg.lambda_protect,
     )
-    logger.info(
-        f"Loss weights: BCE={cfg.lambda_bce}, L1={cfg.lambda_l1}, "
-        f"Protect={cfg.lambda_protect}"
-    )
+    if cfg.num_classes > 1:
+        logger.info(
+            f"Loss criterion: MulticlassCrossEntropyLoss (num_classes={cfg.num_classes}, ignore_index=255)"
+        )
+    else:
+        logger.info(
+            f"Loss weights: BCE={cfg.lambda_bce}, L1={cfg.lambda_l1}, "
+            f"Protect={cfg.lambda_protect}"
+        )
 
     # Optimizer
     if cfg.optimizer == "adamw":

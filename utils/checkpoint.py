@@ -81,17 +81,30 @@ def load_checkpoint(
     scaler: Optional[Any] = None,
     map_location: Optional[str | torch.device] = None,
     weights_only: bool = False,
+    filter_shape_mismatch: bool = True,
 ) -> Dict[str, Any]:
-    """Load a checkpoint.
+    """Load a checkpoint with automatic shape-mismatch filtering.
 
     Parameters
     ----------
+    path : Path or str
+        Path to checkpoint file.
+    model : nn.Module
+        Target PyTorch model.
+    optimizer, scheduler, scaler : optional
+        State containers to restore if weights_only is False.
+    map_location : str or torch.device, optional
+        Device mapping.
     weights_only : bool
-        If True, only load model weights (ignore optimizer, scheduler, etc.).
+        If True, only load model weights (ignore optimizer, scheduler, epoch, etc.).
+    filter_shape_mismatch : bool
+        If True, skip layers whose tensor shapes don't match the current model (e.g.
+        when transferring a backbone pretrained on COCO-Stuff/ADE20K to a binary
+        segmentation model with a different classifier head).
 
     Returns
     -------
-    dict with all checkpoint data (epoch, global_step, best metrics, …)
+    dict with all checkpoint data (epoch, global_step, best metrics, config, …)
     """
     path = Path(path)
     if not path.exists():
@@ -99,23 +112,58 @@ def load_checkpoint(
 
     checkpoint = torch.load(path, map_location=map_location, weights_only=False)
 
+    # Handle direct state_dict vs full checkpoint dict
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    elif isinstance(checkpoint, dict):
+        state_dict = checkpoint
+    else:
+        raise ValueError(f"Unrecognized checkpoint format in {path}")
+
     # Handle DataParallel / DDP module. prefix
-    state_dict = checkpoint.get("model_state_dict", {})
     state_dict = _strip_module_prefix(state_dict)
     model_state = model.state_dict()
 
-    # Check for missing / unexpected keys
-    missing = set(model_state.keys()) - set(state_dict.keys())
-    unexpected = set(state_dict.keys()) - set(model_state.keys())
-    if missing:
-        logger.warning(f"Missing keys in checkpoint: {missing}")
-    if unexpected:
-        logger.warning(f"Unexpected keys in checkpoint: {unexpected}")
+    matched_dict = {}
+    mismatched_keys = []
+    skipped_keys = []
 
-    model.load_state_dict(state_dict, strict=False)
+    for k, v in state_dict.items():
+        if k in model_state:
+            if v.shape == model_state[k].shape:
+                matched_dict[k] = v
+            elif filter_shape_mismatch:
+                mismatched_keys.append((k, list(v.shape), list(model_state[k].shape)))
+            else:
+                matched_dict[k] = v
+        else:
+            skipped_keys.append(k)
 
-    if not weights_only:
-        if optimizer and "optimizer_state_dict" in checkpoint:
+    missing_keys = set(model_state.keys()) - set(matched_dict.keys())
+
+    # Load matching weights
+    model.load_state_dict(matched_dict, strict=False)
+
+    logger.info(
+        f"Loaded {len(matched_dict)}/{len(model_state)} matching parameter tensors from {path}"
+    )
+
+    if mismatched_keys:
+        logger.info(
+            f"Shape-mismatched layers skipped ({len(mismatched_keys)}): "
+            + ", ".join(
+                f"'{k}' (ckpt: {ckpt_s} -> model: {model_s})"
+                for k, ckpt_s, model_s in mismatched_keys
+            )
+            + " — these layers will remain initialized for the current task."
+        )
+
+    if missing_keys - {k for k, _, _ in mismatched_keys}:
+        unmatched_missing = missing_keys - {k for k, _, _ in mismatched_keys}
+        logger.info(f"Missing keys in checkpoint (initialized randomly): {unmatched_missing}")
+
+    if not weights_only and isinstance(checkpoint, dict):
+        if optimizer and "optimizer_state_dict" in checkpoint and checkpoint["optimizer_state_dict"]:
             try:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             except Exception as e:
@@ -134,6 +182,24 @@ def load_checkpoint(
                 logger.warning(f"Could not load scaler state: {e}")
 
     return checkpoint
+
+
+def load_pretrained_weights(
+    path: Path | str,
+    model: nn.Module,
+    map_location: Optional[str | torch.device] = None,
+) -> Dict[str, Any]:
+    """Load pretrained backbone weights into model, automatically skipping mismatched heads.
+
+    Starts training fresh from epoch 0.
+    """
+    return load_checkpoint(
+        path=path,
+        model=model,
+        weights_only=True,
+        filter_shape_mismatch=True,
+        map_location=map_location,
+    )
 
 
 def _strip_module_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
