@@ -361,23 +361,33 @@ def build_dataloaders(
                 f"Expected {split} directory at {split_dir}"
             )
 
+        if split == "test":
+            mask_dir = split_dir / "masks"
+            if not mask_dir.exists() or not any(mask_dir.glob("*.png")):
+                continue  # test set has no annotations (e.g. ADE20K competition test set)
+
         h = train_height if is_train else val_height
         w = train_width if is_train else val_width
 
-        dataset = DimmingDataset(
-            root=split_dir,
-            height=h,
-            width=w,
-            num_classes=num_classes,
-            protection_radius=protection_radius,
-            transition_width=transition_width,
-            soft_target_mode=soft_target_mode,
-            is_train=is_train,
-            allow_threshold=allow_threshold,
-            aug_brightness_limit=aug_brightness_limit,
-            aug_contrast_limit=aug_contrast_limit,
-            aug_hflip_p=aug_hflip_p,
-        )
+        try:
+            dataset = DimmingDataset(
+                root=split_dir,
+                height=h,
+                width=w,
+                num_classes=num_classes,
+                protection_radius=protection_radius,
+                transition_width=transition_width,
+                soft_target_mode=soft_target_mode,
+                is_train=is_train,
+                allow_threshold=allow_threshold,
+                aug_brightness_limit=aug_brightness_limit,
+                aug_contrast_limit=aug_contrast_limit,
+                aug_hflip_p=aug_hflip_p,
+            )
+        except (FileNotFoundError, RuntimeError) as e:
+            if split == "test":
+                continue
+            raise e
 
         use_persistent = persistent_workers and num_workers > 0
 
