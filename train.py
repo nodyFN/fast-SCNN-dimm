@@ -430,12 +430,15 @@ def train_one_epoch(
                 model.parameters(), cfg.gradient_clip_max_norm
             )
 
+        scale_before = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
+        scale_after = scaler.get_scale()
 
         # Step scheduler (PolyLR is per-iteration)
         if cfg.scheduler == "poly":
-            scheduler.step()
+            if scale_before <= scale_after:
+                scheduler.step()
 
         # Logging
         batch_loss = losses["total"].item()
