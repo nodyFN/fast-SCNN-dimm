@@ -332,3 +332,37 @@ class TestDatasetSplitter:
         assert len(train_imgs) == 8
         assert len(val_imgs) == 1
         assert len(test_imgs) == 1
+
+    def test_multiclass_dataset_loading(self, tmp_path):
+        """Verify DimmingDataset loads multiclass masks without throwing binary mask ValueError."""
+        img_dir = tmp_path / "images"
+        mask_dir = tmp_path / "masks"
+        img_dir.mkdir()
+        mask_dir.mkdir()
+
+        # Create multiclass mask with diverse COCO-Stuff classes (e.g. 0, 1, 32, 49, 181)
+        img = np.random.randint(0, 255, (128, 224, 3), dtype=np.uint8)
+        mask = np.zeros((128, 224), dtype=np.uint8)
+        mask[10:30, 10:30] = 1
+        mask[30:60, 30:60] = 32
+        mask[60:90, 60:90] = 49
+        mask[90:120, 90:120] = 181
+
+        cv2.imwrite(str(img_dir / "sample.jpg"), img)
+        cv2.imwrite(str(mask_dir / "sample.png"), mask)
+
+        ds = DimmingDataset(
+            root=tmp_path,
+            height=128,
+            width=224,
+            num_classes=182,
+            is_train=True,
+        )
+        sample = ds[0]
+        assert sample["image"].shape == (3, 128, 224)
+        assert sample["soft_mask"].shape == (1, 128, 224)
+        assert sample["soft_mask"].dtype == torch.int64
+        # Verify unique values in loaded mask
+        unique_vals = torch.unique(sample["soft_mask"]).tolist()
+        assert 181 in unique_vals
+        assert 49 in unique_vals

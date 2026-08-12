@@ -497,8 +497,13 @@ def validate(
         total_loss += losses["total"].item()
         num_batches += 1
 
-        prob = torch.sigmoid(logits)
-        metric_acc.update(prob, soft_targets, binary_masks)
+        if cfg.num_classes > 1:
+            preds = torch.argmax(logits, dim=1, keepdim=True)
+            prob = (preds > 0).float()
+            metric_acc.update(prob, binary_masks, binary_masks)
+        else:
+            prob = torch.sigmoid(logits)
+            metric_acc.update(prob, soft_targets, binary_masks)
 
     avg_loss = total_loss / max(num_batches, 1)
     metrics = metric_acc.compute()
@@ -589,6 +594,7 @@ def main() -> None:
         val_width=cfg.val_width,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
+        num_classes=cfg.num_classes,
         pin_memory=cfg.pin_memory,
         persistent_workers=cfg.persistent_workers,
         protection_radius=cfg.protection_radius,
@@ -821,14 +827,14 @@ def main() -> None:
             total_collected = 0
             with torch.no_grad():
                 for vis_batch in val_loader:
-                    imgs = vis_batch["image"].to(device)
-                    b_masks = vis_batch["binary_mask"]
-                    s_masks = vis_batch["soft_mask"]
-                    preds = torch.sigmoid(model(imgs)).cpu()
+                    if cfg.num_classes > 1:
+                        preds = (torch.argmax(model(imgs), dim=1, keepdim=True).float() / max(cfg.num_classes - 1, 1)).cpu()
+                    else:
+                        preds = torch.sigmoid(model(imgs)).cpu()
 
                     vis_images_list.append(vis_batch["image"])
                     vis_masks_list.append(b_masks)
-                    vis_soft_list.append(s_masks)
+                    vis_soft_list.append(s_masks.float() / (max(cfg.num_classes - 1, 1) if cfg.num_classes > 1 else 1.0))
                     vis_pred_list.append(preds)
 
                     total_collected += imgs.size(0)

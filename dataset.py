@@ -95,7 +95,7 @@ class DimmingDataset(Dataset):
         self,
         root: Path | str,
         height: int = 128,
-        width: int = 224,
+        num_classes: int = 1,
         protection_radius: int = 2,
         transition_width: int = 8,
         soft_target_mode: str = "cosine",
@@ -110,6 +110,7 @@ class DimmingDataset(Dataset):
         self.mask_dir = self.root / "masks"
         self.height = height
         self.width = width
+        self.num_classes = num_classes
         self.protection_radius = protection_radius
         self.transition_width = transition_width
         self.soft_target_mode = soft_target_mode
@@ -220,6 +221,15 @@ class DimmingDataset(Dataset):
                 ToTensorV2(),
             ])
 
+    def _load_mask(self, mask_path: Path) -> np.ndarray:
+        """Load mask array based on num_classes."""
+        if self.num_classes > 1:
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+            if mask is None:
+                raise RuntimeError(f"Failed to load mask: {mask_path}")
+            return mask.astype(np.int64)
+        return self._load_binary_mask(mask_path)
+
     def _load_binary_mask(self, mask_path: Path) -> np.ndarray:
         """Load and convert mask to binary {0, 1} uint8.
 
@@ -260,18 +270,30 @@ class DimmingDataset(Dataset):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         orig_h, orig_w = image.shape[:2]
 
-        # Load binary mask
-        binary_mask = self._load_binary_mask(mask_path)
+        # Load mask
+        mask = self._load_mask(mask_path)
 
         # Apply augmentation (joint geometric + color + normalize + to tensor)
         # Albumentations uses INTER_NEAREST for masks by default in Resize
-        augmented = self.transform(image=image, mask=binary_mask)
+        augmented = self.transform(image=image, mask=mask)
         image_tensor = augmented["image"]       # [3, H, W] float32
-        mask_np = augmented["mask"]             # [H, W] uint8 or float
+        mask_np = augmented["mask"]             # [H, W]
 
-        # Ensure binary mask is {0, 1} after augmentation
         if isinstance(mask_np, torch.Tensor):
             mask_np = mask_np.numpy()
+
+        if self.num_classes > 1:
+            # Multiclass segmentation mode (COCO-Stuff / ADE20K pretraining)
+            mask_tensor = torch.from_numpy(mask_np.astype(np.int64)).unsqueeze(0)
+            binary_mask_tensor = torch.from_numpy((mask_np > 0).astype(np.float32)).unsqueeze(0)
+            return {
+                "image": image_tensor,
+                "binary_mask": binary_mask_tensor,
+                "soft_mask": mask_tensor,
+                "orig_size": (orig_h, orig_w),
+            }
+
+        # Ensure binary mask is {0, 1} after augmentation
         mask_np = mask_np.astype(np.uint8)
         mask_np = (mask_np > 0).astype(np.uint8)  # Safety: re-binarize
 
@@ -309,6 +331,7 @@ def build_dataloaders(
     val_width: int = 224,
     batch_size: int = 16,
     num_workers: int = 4,
+    num_classes: int = 1,
     pin_memory: bool = True,
     persistent_workers: bool = True,
     protection_radius: int = 2,
@@ -344,6 +367,7 @@ def build_dataloaders(
             root=split_dir,
             height=h,
             width=w,
+            num_classes=num_classes,
             protection_radius=protection_radius,
             transition_width=transition_width,
             soft_target_mode=soft_target_mode,
