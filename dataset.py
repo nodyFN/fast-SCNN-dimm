@@ -95,6 +95,7 @@ class DimmingDataset(Dataset):
         self,
         root: Path | str,
         height: int = 128,
+        width: int = 224,
         num_classes: int = 1,
         protection_radius: int = 2,
         transition_width: int = 8,
