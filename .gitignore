@@ -50,3 +50,6 @@ Thumbs.db
 
 # === Raw DUTS download ===
 DUTS/
+
+# === Diagram generator ===
+PlotNeuralNet/
