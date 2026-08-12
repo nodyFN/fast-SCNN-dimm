@@ -666,6 +666,7 @@ def main() -> None:
     best_val_loss = float("inf")
     best_fg_protection = 0.0
     best_soft_mae = float("inf")
+    best_miou = 0.0
 
     if cfg.resume:
         logger.info(f"Resuming from: {cfg.resume}")
@@ -682,6 +683,7 @@ def main() -> None:
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
         best_fg_protection = ckpt.get("best_fg_protection", 0.0)
         best_soft_mae = ckpt.get("best_soft_mae", float("inf"))
+        best_miou = ckpt.get("val_metrics", {}).get("miou", 0.0)
         logger.info(
             f"Resumed: epoch={start_epoch}, step={global_step}, "
             f"best_val_loss={best_val_loss:.4f}"
@@ -689,9 +691,10 @@ def main() -> None:
 
     # Training info
     logger.info(f"\nSeed: {cfg.seed}")
-    logger.info(f"Protection radius: {cfg.protection_radius}")
-    logger.info(f"Transition width: {cfg.transition_width}")
-    logger.info(f"Soft target mode: {cfg.soft_target_mode}")
+    if cfg.num_classes == 1:
+        logger.info(f"Protection radius: {cfg.protection_radius}")
+        logger.info(f"Transition width: {cfg.transition_width}")
+        logger.info(f"Soft target mode: {cfg.soft_target_mode}")
     logger.info(f"Epochs: {cfg.epochs}")
     logger.info(f"Batch size: {cfg.batch_size}")
     logger.info(f"AMP: {cfg.amp}")
@@ -729,18 +732,29 @@ def main() -> None:
         elapsed = time.time() - t0
 
         # Log
-        logger.info(
-            f"Epoch {epoch:03d}/{cfg.epochs} | "
-            f"train_loss={train_loss:.4f} | "
-            f"val_loss={val_loss:.4f} | "
-            f"fg_prot={val_metrics['fg_mean_protection']:.4f} | "
-            f"soft_mae={val_metrics['soft_mae']:.4f} | "
-            f"fg_iou={val_metrics['fg_iou']:.4f} | "
-            f"miou={val_metrics['miou']:.4f} | "
-            f"dice={val_metrics['dice']:.4f} | "
-            f"bg_leak={val_metrics['far_bg_leakage']:.4f} | "
-            f"time={elapsed:.1f}s"
-        )
+        if cfg.num_classes > 1:
+            logger.info(
+                f"Epoch {epoch:03d}/{cfg.epochs} | "
+                f"train_loss={train_loss:.4f} | "
+                f"val_loss={val_loss:.4f} | "
+                f"miou={val_metrics.get('miou', 0.0):.4f} | "
+                f"dice={val_metrics.get('dice', 0.0):.4f} | "
+                f"fg_iou={val_metrics.get('fg_iou', 0.0):.4f} | "
+                f"time={elapsed:.1f}s"
+            )
+        else:
+            logger.info(
+                f"Epoch {epoch:03d}/{cfg.epochs} | "
+                f"train_loss={train_loss:.4f} | "
+                f"val_loss={val_loss:.4f} | "
+                f"fg_prot={val_metrics['fg_mean_protection']:.4f} | "
+                f"soft_mae={val_metrics['soft_mae']:.4f} | "
+                f"fg_iou={val_metrics['fg_iou']:.4f} | "
+                f"miou={val_metrics['miou']:.4f} | "
+                f"dice={val_metrics['dice']:.4f} | "
+                f"bg_leak={val_metrics['far_bg_leakage']:.4f} | "
+                f"time={elapsed:.1f}s"
+            )
 
         # TensorBoard
         writer.add_scalar("val/loss", val_loss, epoch)
@@ -782,20 +796,27 @@ def main() -> None:
         is_best_val = False
         is_best_fg = False
         is_best_soft = False
+        is_best_miou = False
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             is_best_val = True
 
-        fg_prot = val_metrics["fg_mean_protection"]
-        if fg_prot > best_fg_protection:
-            best_fg_protection = fg_prot
-            is_best_fg = True
+        if cfg.num_classes > 1:
+            miou_val = val_metrics.get("miou", 0.0)
+            if miou_val > best_miou:
+                best_miou = miou_val
+                is_best_miou = True
+        else:
+            fg_prot = val_metrics["fg_mean_protection"]
+            if fg_prot > best_fg_protection:
+                best_fg_protection = fg_prot
+                is_best_fg = True
 
-        soft_mae = val_metrics["soft_mae"]
-        if soft_mae < best_soft_mae:
-            best_soft_mae = soft_mae
-            is_best_soft = True
+            soft_mae = val_metrics["soft_mae"]
+            if soft_mae < best_soft_mae:
+                best_soft_mae = soft_mae
+                is_best_soft = True
 
         # Step 2: Save latest checkpoint (always includes latest best metrics)
         _save("latest")
@@ -804,6 +825,10 @@ def main() -> None:
         if is_best_val:
             _save("best_val_loss")
             logger.info(f"  → New best val_loss: {best_val_loss:.4f}")
+
+        if is_best_miou:
+            _save("best_miou")
+            logger.info(f"  → New best miou: {best_miou:.4f}")
 
         if is_best_fg:
             _save("best_fg_protection")
@@ -827,6 +852,9 @@ def main() -> None:
             total_collected = 0
             with torch.no_grad():
                 for vis_batch in val_loader:
+                    imgs = vis_batch["image"].to(device)
+                    b_masks = vis_batch["binary_mask"]
+                    s_masks = vis_batch["soft_mask"]
                     if cfg.num_classes > 1:
                         preds = (torch.argmax(model(imgs), dim=1, keepdim=True).float() / max(cfg.num_classes - 1, 1)).cpu()
                     else:
