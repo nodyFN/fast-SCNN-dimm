@@ -197,10 +197,22 @@ def main() -> None:
     if args.device:
         cfg.device = args.device
     device = cfg.resolve_device()
-    logger.info(f"Device: {device}")
+    # Inspect checkpoint to auto-resolve num_classes and resolution
+    raw_ckpt = torch.load(args.weights, map_location=device, weights_only=False)
+    saved_config = raw_ckpt.get("config", {}) if isinstance(raw_ckpt, dict) else {}
+    state_dict = raw_ckpt.get("model_state_dict", raw_ckpt) if isinstance(raw_ckpt, dict) else raw_ckpt
+
+    num_classes = 1
+    if isinstance(state_dict, dict) and "classifier.conv.bias" in state_dict:
+        num_classes = state_dict["classifier.conv.bias"].shape[0]
+    elif "num_classes" in saved_config:
+        num_classes = int(saved_config["num_classes"])
+
+    logger.info(f"Model output channels (num_classes): {num_classes}")
 
     # Load model
     model = FastSCNNDimming(
+        num_classes=num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
     ).to(device)
@@ -209,7 +221,6 @@ def main() -> None:
     logger.info(f"Loaded weights from: {args.weights}")
 
     # Auto-resolve inference resolution from checkpoint or fallback
-    saved_config = ckpt.get("config", {})
     infer_h = args.height if args.height is not None else int(
         saved_config.get("val_height", saved_config.get("train_height", 128))
     )
