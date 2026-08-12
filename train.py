@@ -52,7 +52,7 @@ from dataset import build_dataloaders
 from models.fast_scnn_dimming import FastSCNNDimming, count_parameters
 from utils.checkpoint import load_checkpoint, load_pretrained_weights, save_checkpoint
 from utils.losses import DimmingLoss, build_criterion
-from utils.metrics import MetricAccumulator, format_metrics
+from utils.metrics import MetricAccumulator, MulticlassMetricAccumulator, format_metrics
 from utils.scheduler import build_scheduler
 from utils.seed import seed_everything
 from utils.visualization import plot_training_curves, save_training_visualization
@@ -482,7 +482,10 @@ def validate(
     model.eval()
     total_loss = 0.0
     num_batches = 0
-    metric_acc = MetricAccumulator()
+    if cfg.num_classes > 1:
+        metric_acc = MulticlassMetricAccumulator(num_classes=cfg.num_classes, ignore_index=255)
+    else:
+        metric_acc = MetricAccumulator()
 
     for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
@@ -498,9 +501,8 @@ def validate(
         num_batches += 1
 
         if cfg.num_classes > 1:
-            preds = torch.argmax(logits, dim=1, keepdim=True)
-            prob = (preds > 0).float()
-            metric_acc.update(prob, binary_masks, binary_masks)
+            preds = torch.argmax(logits, dim=1)
+            metric_acc.update(preds, soft_targets)
         else:
             prob = torch.sigmoid(logits)
             metric_acc.update(prob, soft_targets, binary_masks)
@@ -738,8 +740,8 @@ def main() -> None:
                 f"train_loss={train_loss:.4f} | "
                 f"val_loss={val_loss:.4f} | "
                 f"miou={val_metrics.get('miou', 0.0):.4f} | "
+                f"pixel_acc={val_metrics.get('pixel_acc', 0.0):.4f} | "
                 f"dice={val_metrics.get('dice', 0.0):.4f} | "
-                f"fg_iou={val_metrics.get('fg_iou', 0.0):.4f} | "
                 f"time={elapsed:.1f}s"
             )
         else:

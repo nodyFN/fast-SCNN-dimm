@@ -174,6 +174,88 @@ class MetricAccumulator:
         return results
 
 
+class MulticlassMetricAccumulator:
+    """Confusion matrix based metric accumulator for multiclass semantic segmentation (COCO-Stuff / ADE20K).
+
+    Computes:
+    - Mean IoU (mIoU) across all present classes
+    - Pixel Accuracy (pixel_acc)
+    - Mean Dice coefficient
+    """
+
+    def __init__(self, num_classes: int, ignore_index: int = 255) -> None:
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        self.confusion_matrix = np.zeros((num_classes, num_classes), dtype=np.int64)
+
+    def reset(self) -> None:
+        self.confusion_matrix.fill(0)
+
+    @torch.no_grad()
+    def update(
+        self,
+        pred_labels: torch.Tensor,
+        gt_labels: torch.Tensor,
+    ) -> None:
+        """Update confusion matrix with a batch.
+
+        Parameters
+        ----------
+        pred_labels : Tensor [B, H, W] or [B, 1, H, W]
+            Predicted integer class IDs (e.g. from argmax).
+        gt_labels : Tensor [B, H, W] or [B, 1, H, W]
+            Ground truth integer class IDs.
+        """
+        if pred_labels.dim() == 4 and pred_labels.shape[1] == 1:
+            pred_labels = pred_labels.squeeze(1)
+        if gt_labels.dim() == 4 and gt_labels.shape[1] == 1:
+            gt_labels = gt_labels.squeeze(1)
+
+        preds = pred_labels.detach().cpu().numpy().flatten()
+        gts = gt_labels.detach().cpu().numpy().flatten()
+
+        # Mask out ignore index and out-of-range labels
+        valid_mask = (gts != self.ignore_index) & (gts >= 0) & (gts < self.num_classes)
+        valid_preds = preds[valid_mask]
+        valid_gts = gts[valid_mask]
+
+        if len(valid_gts) > 0:
+            # 2D bincount is much faster than per-cell loop
+            idx = valid_gts * self.num_classes + valid_preds
+            counts = np.bincount(idx, minlength=self.num_classes ** 2)
+            self.confusion_matrix += counts.reshape(self.num_classes, self.num_classes)
+
+    def compute(self, eps: float = 1e-6) -> Dict[str, float]:
+        """Compute mIoU, Pixel Accuracy, and Mean Dice."""
+        cm = self.confusion_matrix
+        tp = np.diag(cm)
+        fp = cm.sum(axis=0) - tp
+        fn = cm.sum(axis=1) - tp
+
+        union = tp + fp + fn
+        # Only evaluate classes that appear in GT (where fn + tp > 0)
+        present_mask = (cm.sum(axis=1) > 0)
+
+        iou = np.zeros(self.num_classes, dtype=np.float64)
+        iou[present_mask] = tp[present_mask] / (union[present_mask] + eps)
+        miou = float(np.mean(iou[present_mask])) if np.any(present_mask) else 0.0
+
+        dice = np.zeros(self.num_classes, dtype=np.float64)
+        denom = 2 * tp[present_mask] + fp[present_mask] + fn[present_mask]
+        dice[present_mask] = (2 * tp[present_mask]) / (denom + eps)
+        mean_dice = float(np.mean(dice[present_mask])) if np.any(present_mask) else 0.0
+
+        total_correct = int(tp.sum())
+        total_pixels = int(cm.sum())
+        pixel_acc = float(total_correct / max(total_pixels, 1))
+
+        return {
+            "miou": miou,
+            "pixel_acc": pixel_acc,
+            "dice": mean_dice,
+        }
+
+
 def format_metrics(metrics: Dict[str, float]) -> str:
     """Format metrics dict into a human-readable multi-line string."""
     lines = []

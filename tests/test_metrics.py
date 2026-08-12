@@ -169,3 +169,19 @@ class TestMultipleBatches:
         m = acc.compute()
         # After reset, counts should be 0
         assert m["soft_mae"] == 0.0
+
+
+class TestMulticlassMetrics:
+    """Test multiclass segmentation metrics (mIoU, pixel_acc, dice)."""
+
+    def test_perfect_multiclass_prediction(self):
+        from utils.metrics import MulticlassMetricAccumulator
+
+        acc = MulticlassMetricAccumulator(num_classes=182, ignore_index=255)
+        labels = torch.randint(0, 182, (2, 32, 32))
+        labels[0, :5, :5] = 255  # ignore index
+        acc.update(labels, labels)
+        m = acc.compute()
+        assert abs(m["miou"] - 1.0) < 1e-4
+        assert abs(m["pixel_acc"] - 1.0) < 1e-4
+        assert abs(m["dice"] - 1.0) < 1e-4
