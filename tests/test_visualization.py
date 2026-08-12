@@ -62,3 +62,22 @@ class TestVisualizationUtilities:
         plot_training_curves(history, curve_file)
         assert curve_file.exists()
         assert curve_file.stat().st_size > 0
+
+    def test_multiclass_training_visualization(self, tmp_path):
+        save_file = tmp_path / "val_vis_multiclass.jpg"
+        images = torch.randn(4, 3, 128, 224)
+        binary_masks = torch.randint(0, 2, (4, 1, 128, 224)).float()
+        soft_targets = torch.randint(0, 183, (4, 1, 128, 224)).long()
+        predictions = torch.randint(0, 183, (4, 1, 128, 224)).long()
+
+        save_training_visualization(
+            save_file,
+            images=images,
+            binary_masks=binary_masks,
+            soft_targets=soft_targets,
+            predictions=predictions,
+            num_samples=4,
+            num_classes=183,
+        )
+        assert save_file.exists()
+        assert save_file.stat().st_size > 0

@@ -861,13 +861,13 @@ def main() -> None:
                     b_masks = vis_batch["binary_mask"]
                     s_masks = vis_batch["soft_mask"]
                     if cfg.num_classes > 1:
-                        preds = (torch.argmax(model(imgs), dim=1, keepdim=True).float() / max(cfg.num_classes - 1, 1)).cpu()
+                        preds = torch.argmax(model(imgs), dim=1, keepdim=True).cpu()
                     else:
                         preds = torch.sigmoid(model(imgs)).cpu()
 
                     vis_images_list.append(vis_batch["image"])
                     vis_masks_list.append(b_masks)
-                    vis_soft_list.append(s_masks.float() / (max(cfg.num_classes - 1, 1) if cfg.num_classes > 1 else 1.0))
+                    vis_soft_list.append(s_masks)
                     vis_pred_list.append(preds)
 
                     total_collected += imgs.size(0)
@@ -888,6 +888,7 @@ def main() -> None:
                     predictions=all_vis_preds,
                     num_samples=cfg.num_vis_samples,
                     min_brightness=cfg.min_brightness,
+                    num_classes=cfg.num_classes,
                 )
 
     writer.close()

@@ -216,6 +216,37 @@ def save_side_by_side(
     cv2.imwrite(str(save_path), row)
 
 
+# ---------------------------------------------------------------------------
+# Semantic Segmentation Color Palette
+# ---------------------------------------------------------------------------
+
+
+def get_color_palette(num_classes: int = 256) -> np.ndarray:
+    """Generate a distinct BGR color palette for semantic segmentation visualization.
+
+    Based on Pascal VOC / ADE20K bit-shift palette generation.
+    """
+    palette = np.zeros((num_classes, 3), dtype=np.uint8)
+    for i in range(num_classes):
+        r, g, b = 0, 0, 0
+        cid = i
+        for j in range(8):
+            r |= ((cid >> 0) & 1) << (7 - j)
+            g |= ((cid >> 1) & 1) << (7 - j)
+            b |= ((cid >> 2) & 1) << (7 - j)
+            cid >>= 3
+        palette[i] = [b, g, r]  # BGR for OpenCV
+    # Background / unlabeled (class 0) as dark neutral
+    palette[0] = [20, 20, 20]
+    return palette
+
+
+def colorize_mask(mask: np.ndarray, palette: np.ndarray, num_classes: int = 256) -> np.ndarray:
+    """Colorize an integer class mask [H, W] with a BGR palette."""
+    mask_clipped = np.clip(mask, 0, num_classes - 1).astype(np.int32)
+    return palette[mask_clipped]
+
+
 def save_training_visualization(
     save_path: Path | str,
     images: torch.Tensor,
@@ -224,14 +255,20 @@ def save_training_visualization(
     predictions: torch.Tensor,
     num_samples: int = 4,
     min_brightness: float = 0.5,
+    num_classes: int = 1,
 ) -> None:
     """Save training-time validation visualization with labeled headers.
 
-    Creates a grid of side-by-side labeled panels for multiple samples.
-    Panels per sample:
+    - If num_classes > 1 (Multiclass mode):
+        1. Original RGB
+        2. GT Segmentation (Color-coded)
+        3. Pred Segmentation (Color-coded)
+        4. Pred Overlay (50% blend on original RGB)
+
+    - If num_classes == 1 (Binary Soft Dimming mode):
         1. Original RGB
         2. GT Binary
-        3. GT Soft Target
+        3. GT Soft Target (Heatmap)
         4. Pred Soft (Gray)
         5. Pred Soft (Heatmap)
         6. Dimmed Preview
@@ -241,9 +278,10 @@ def save_training_visualization(
     images : Tensor [N, 3, H, W], normalized
     binary_masks : Tensor [N, 1, H, W]
     soft_targets : Tensor [N, 1, H, W]
-    predictions : Tensor [N, 1, H, W], probability (after sigmoid)
+    predictions : Tensor [N, 1, H, W]
     num_samples : int
     min_brightness : float
+    num_classes : int
     """
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,37 +289,58 @@ def save_training_visualization(
     n = min(num_samples, images.size(0))
     rows = []
 
-    for i in range(n):
-        img = denormalize_image(images[i])
-        binary = binary_masks[i, 0].detach().cpu().numpy()
-        soft = soft_targets[i, 0].detach().cpu().numpy()
-        pred = predictions[i, 0].detach().cpu().numpy()
+    if num_classes > 1:
+        palette = get_color_palette(max(num_classes + 1, 256))
+        for i in range(n):
+            img = denormalize_image(images[i])
+            gt_label = soft_targets[i, 0].detach().cpu().numpy().astype(np.int32)
+            pred_label = predictions[i, 0].detach().cpu().numpy().astype(np.int32)
 
-        # Build each labeled panel
-        panel_orig = add_panel_label(img.copy(), "Original RGB")
+            panel_orig = add_panel_label(img.copy(), "Original RGB")
 
-        binary_vis = (np.clip(binary, 0, 1) * 255).astype(np.uint8)
-        panel_binary = add_panel_label(
-            cv2.cvtColor(binary_vis, cv2.COLOR_GRAY2BGR), "GT Binary"
-        )
+            gt_color = colorize_mask(gt_label, palette, len(palette))
+            panel_gt = add_panel_label(gt_color, "GT Segmentation")
 
-        panel_gt_soft = add_panel_label(mask_to_heatmap(soft), "GT Soft Target")
+            pred_color = colorize_mask(pred_label, palette, len(palette))
+            panel_pred = add_panel_label(pred_color, "Pred Segmentation")
 
-        pred_gray = (np.clip(pred, 0, 1) * 255).astype(np.uint8)
-        panel_pred_gray = add_panel_label(
-            cv2.cvtColor(pred_gray, cv2.COLOR_GRAY2BGR), "Pred Soft (Gray)"
-        )
+            overlay = cv2.addWeighted(img, 0.5, pred_color, 0.5, 0)
+            panel_overlay = add_panel_label(overlay, "Pred Overlay (Blend)")
 
-        panel_pred_heat = add_panel_label(mask_to_heatmap(pred), "Pred Soft (Heatmap)")
+            row = np.concatenate([panel_orig, panel_gt, panel_pred, panel_overlay], axis=1)
+            rows.append(row)
+    else:
+        for i in range(n):
+            img = denormalize_image(images[i])
+            binary = binary_masks[i, 0].detach().cpu().numpy()
+            soft = soft_targets[i, 0].detach().cpu().numpy()
+            pred = predictions[i, 0].detach().cpu().numpy()
 
-        dimmed = create_dimmed_preview(img, pred, min_brightness)
-        panel_dimmed = add_panel_label(dimmed, "Dimmed Preview")
+            # Build each labeled panel
+            panel_orig = add_panel_label(img.copy(), "Original RGB")
 
-        row = np.concatenate(
-            [panel_orig, panel_binary, panel_gt_soft, panel_pred_gray, panel_pred_heat, panel_dimmed],
-            axis=1,
-        )
-        rows.append(row)
+            binary_vis = (np.clip(binary, 0, 1) * 255).astype(np.uint8)
+            panel_binary = add_panel_label(
+                cv2.cvtColor(binary_vis, cv2.COLOR_GRAY2BGR), "GT Binary"
+            )
+
+            panel_gt_soft = add_panel_label(mask_to_heatmap(soft), "GT Soft Target")
+
+            pred_gray = (np.clip(pred, 0, 1) * 255).astype(np.uint8)
+            panel_pred_gray = add_panel_label(
+                cv2.cvtColor(pred_gray, cv2.COLOR_GRAY2BGR), "Pred Soft (Gray)"
+            )
+
+            panel_pred_heat = add_panel_label(mask_to_heatmap(pred), "Pred Soft (Heatmap)")
+
+            dimmed = create_dimmed_preview(img, pred, min_brightness)
+            panel_dimmed = add_panel_label(dimmed, "Dimmed Preview")
+
+            row = np.concatenate(
+                [panel_orig, panel_binary, panel_gt_soft, panel_pred_gray, panel_pred_heat, panel_dimmed],
+                axis=1,
+            )
+            rows.append(row)
 
     if rows:
         grid = np.concatenate(rows, axis=0)
