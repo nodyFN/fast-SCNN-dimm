@@ -287,3 +287,48 @@ class TestMatToPngConversion:
         loaded_img = Image.open(str(out_png))
         loaded_arr = np.array(loaded_img)
         assert np.array_equal(loaded_arr, dummy_mask)
+
+
+class TestDatasetSplitter:
+    """Test split_dataset utility."""
+
+    def test_dataset_split(self, tmp_path):
+        from split_dataset import split_and_organize
+
+        src_imgs = tmp_path / "src_images"
+        src_msks = tmp_path / "src_masks"
+        out_root = tmp_path / "dataset_out"
+        src_imgs.mkdir()
+        src_msks.mkdir()
+
+        # Create 10 dummy samples
+        for i in range(10):
+            stem = f"sample_{i:04d}"
+            img = np.zeros((32, 32, 3), dtype=np.uint8)
+            msk = np.zeros((32, 32), dtype=np.uint8)
+            cv2.imwrite(str(src_imgs / f"{stem}.jpg"), img)
+            cv2.imwrite(str(src_msks / f"{stem}.png"), msk)
+
+        split_and_organize(
+            images_dir=src_imgs,
+            masks_dir=src_msks,
+            output_dir=out_root,
+            train_ratio=0.8,
+            val_ratio=0.1,
+            test_ratio=0.1,
+            seed=42,
+            mode="copy",
+            workers=2,
+        )
+
+        assert (out_root / "train" / "images").exists()
+        assert (out_root / "val" / "images").exists()
+        assert (out_root / "test" / "images").exists()
+
+        train_imgs = list((out_root / "train" / "images").glob("*.jpg"))
+        val_imgs = list((out_root / "val" / "images").glob("*.jpg"))
+        test_imgs = list((out_root / "test" / "images").glob("*.jpg"))
+
+        assert len(train_imgs) == 8
+        assert len(val_imgs) == 1
+        assert len(test_imgs) == 1
