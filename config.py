@@ -83,6 +83,7 @@ class Config:
     amp: bool = True                    # Only effective when CUDA is available
     gradient_clip_max_norm: float = 1.0
     gradient_clip_enabled: bool = True
+    freeze_bn: bool = False             # If True, freeze all BatchNorm parameters and running stats
 
     # ── Loss weights ──────────────────────────────────────────────────
     # [PROJECT DECISION] BCE + L1 + Foreground Protection (for num_classes == 1)

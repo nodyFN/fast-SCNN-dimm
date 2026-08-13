@@ -126,6 +126,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--refinement-head", type=str, default=None,
                    choices=["multiscale", "legacy_h8"],
                    help="Refinement head type for dual-head model (default: multiscale)")
+    p.add_argument("--freeze-bn", action="store_true",
+                   help="Freeze all BatchNorm layers parameters and running stats")
 
     # Checkpoint & Transfer Learning
     p.add_argument("--pretrained", type=str, default=None,
@@ -158,6 +160,8 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
         cfg.lambda_coarse = args.lambda_coarse
     if args.refinement_head is not None:
         cfg.refinement_head = args.refinement_head
+    if args.freeze_bn:
+        cfg.freeze_bn = True
     if args.train_height is not None:
         cfg.train_height = args.train_height
     if args.train_width is not None:
@@ -401,6 +405,31 @@ def run_smoke_test(cfg: Config) -> None:
 # ===========================================================================
 
 
+def log_bn_stats(model: nn.Module, writer: SummaryWriter, step: int) -> None:
+    """Log average running statistics and weights of BatchNorm layers to TensorBoard."""
+    running_means = []
+    running_vars = []
+    bn_weights = []
+    bn_biases = []
+    
+    for name, m in model.named_modules():
+        if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
+            if m.running_mean is not None:
+                running_means.append(m.running_mean.detach().cpu().mean().item())
+            if m.running_var is not None:
+                running_vars.append(m.running_var.detach().cpu().mean().item())
+            if m.weight is not None:
+                bn_weights.append(m.weight.detach().cpu().mean().item())
+            if m.bias is not None:
+                bn_biases.append(m.bias.detach().cpu().mean().item())
+                
+    if running_means:
+        writer.add_scalar("bn/avg_running_mean", np.mean(running_means), step)
+        writer.add_scalar("bn/avg_running_var", np.mean(running_vars), step)
+        writer.add_scalar("bn/avg_weight", np.mean(bn_weights), step)
+        writer.add_scalar("bn/avg_bias", np.mean(bn_biases), step)
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -422,6 +451,10 @@ def train_one_epoch(
     global_step : int (updated)
     """
     model.train()
+    if getattr(cfg, "freeze_bn", False):
+        for m in model.modules():
+            if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
+                m.eval()
     total_loss = 0.0
     num_batches = 0
 
@@ -482,6 +515,7 @@ def train_one_epoch(
             writer.add_scalar("train/loss_l1", losses["l1"].item(), global_step)
             writer.add_scalar("train/loss_protect", losses["protect"].item(), global_step)
             writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
+            log_bn_stats(model, writer, global_step)
 
         if use_tqdm:
             iterator.set_postfix(
@@ -613,6 +647,14 @@ def main() -> None:
         prompt_gate_mode=cfg.prompt_gate_mode,
         prompt_gate_strength=cfg.prompt_gate_strength,
     ).to(device)
+
+    if cfg.freeze_bn:
+        logger.info("Freezing all BatchNorm layers (setting requires_grad=False for BN parameters)")
+        for m in model.modules():
+            if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
+                for p in m.parameters():
+                    p.requires_grad = False
+
     total_params, trainable_params = count_parameters(model)
     logger.info(f"Model architecture: {cfg.model_name}")
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
