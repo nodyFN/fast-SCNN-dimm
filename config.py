@@ -56,11 +56,15 @@ class Config:
     transition_width: int = 8           # Cosine feather width in pixels
 
     # ── Model ─────────────────────────────────────────────────────────
+    model_name: str = "fast_scnn_dimming"  # "fast_scnn_dimming" | "fast_scnn_dual_head"
     num_classes: int = 1               # Default 1 (binary dimming), >1 for multiclass pretraining
     # [PROJECT DECISION] PPM pool sizes — paper does not specify for Fast-SCNN
     ppm_pool_sizes: Tuple[int, ...] = (1, 2, 3, 6)
     # [PROJECT DECISION] Dropout in classifier
     dropout_p: float = 0.1
+    refinement_head: str = "multiscale" # "multiscale" | "legacy_h8" (for dual_head)
+    prompt_gate_mode: str = "bidirectional"
+    prompt_gate_strength: float = 0.5
 
     # ── Optimizer ─────────────────────────────────────────────────────
     # [PROJECT DECISION] AdamW (paper uses SGD)
@@ -85,6 +89,7 @@ class Config:
     lambda_bce: float = 1.0
     lambda_l1: float = 1.0
     lambda_protect: float = 2.0
+    lambda_coarse: float = 0.5         # Weight for CoarseHead loss in DualHead model
 
     # ── Checkpointing ─────────────────────────────────────────────────
     checkpoint_save_interval: int = 0   # 0 = disabled; N = save every N epochs

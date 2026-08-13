@@ -184,22 +184,90 @@ class MulticlassCrossEntropyLoss(nn.Module):
         }
 
 
+class DualHeadLoss(nn.Module):
+    """Composite loss for Dual-Head (Coarse + Fine) segmentation models.
+
+    Loss Formulation
+    ----------------
+    L_total = L_fine + lambda_coarse * L_coarse
+
+    - If num_classes == 1 (binary foreground dimming):
+        L_fine   = DimmingLoss(fine_logits, soft_target, binary_mask)
+        L_coarse = DimmingLoss(coarse_logits, soft_target, binary_mask)
+    - If num_classes > 1 (multiclass):
+        L_fine   = MulticlassCrossEntropyLoss(fine_logits, soft_target)
+        L_coarse = MulticlassCrossEntropyLoss(coarse_logits, soft_target)
+
+    Parameters
+    ----------
+    base_loss : nn.Module
+        Underlying loss (DimmingLoss or MulticlassCrossEntropyLoss).
+    lambda_coarse : float
+        Weight for coarse auxiliary loss (default: 0.5).
+    """
+
+    def __init__(
+        self,
+        base_loss: nn.Module,
+        lambda_coarse: float = 0.5,
+    ) -> None:
+        super().__init__()
+        self.base_loss = base_loss
+        self.lambda_coarse = lambda_coarse
+
+    def forward(
+        self,
+        pred: torch.Tensor | Dict[str, torch.Tensor],
+        soft_target: torch.Tensor,
+        binary_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        if isinstance(pred, dict):
+            fine_logits = pred["fine_logits"]
+            coarse_logits = pred["coarse_logits"]
+
+            fine_losses = self.base_loss(fine_logits, soft_target, binary_mask)
+            coarse_losses = self.base_loss(coarse_logits, soft_target, binary_mask)
+
+            total = fine_losses["total"] + self.lambda_coarse * coarse_losses["total"]
+
+            return {
+                "total": total,
+                "fine_total": fine_losses["total"],
+                "coarse_total": coarse_losses["total"],
+                "bce": fine_losses["bce"],
+                "l1": fine_losses["l1"],
+                "protect": fine_losses["protect"],
+                "coarse_bce": coarse_losses["bce"],
+            }
+        else:
+            return self.base_loss(pred, soft_target, binary_mask)
+
+
 def build_criterion(
     num_classes: int = 1,
     lambda_bce: float = 1.0,
     lambda_l1: float = 1.0,
     lambda_protect: float = 2.0,
     ignore_index: int = 255,
+    is_dual_head: bool = False,
+    lambda_coarse: float = 0.5,
 ) -> nn.Module:
-    """Build appropriate loss criterion based on num_classes.
+    """Build appropriate loss criterion based on num_classes and model type.
 
     - num_classes == 1: DimmingLoss (BCE + L1 + Foreground Protection)
     - num_classes > 1: MulticlassCrossEntropyLoss (CrossEntropy with ignore_index=255)
+    - is_dual_head: Wraps with DualHeadLoss (L_fine + lambda_coarse * L_coarse)
     """
     if num_classes > 1:
-        return MulticlassCrossEntropyLoss(ignore_index=ignore_index)
-    return DimmingLoss(
-        lambda_bce=lambda_bce,
-        lambda_l1=lambda_l1,
-        lambda_protect=lambda_protect,
-    )
+        base = MulticlassCrossEntropyLoss(ignore_index=ignore_index)
+    else:
+        base = DimmingLoss(
+            lambda_bce=lambda_bce,
+            lambda_l1=lambda_l1,
+            lambda_protect=lambda_protect,
+        )
+
+    if is_dual_head:
+        return DualHeadLoss(base_loss=base, lambda_coarse=lambda_coarse)
+    return base
+

@@ -49,7 +49,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from config import Config
 from dataset import build_dataloaders
-from models.fast_scnn_dimming import FastSCNNDimming, count_parameters
+from models import build_model, count_parameters
 from utils.checkpoint import load_checkpoint, load_pretrained_weights, save_checkpoint
 from utils.losses import DimmingLoss, build_criterion
 from utils.metrics import MetricAccumulator, MulticlassMetricAccumulator, format_metrics
@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments with config override."""
     p = argparse.ArgumentParser(
-        description="Train Fast-SCNN Dimming",
+        description="Train Fast-SCNN Dimming / Dual-Head",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -108,6 +108,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lambda-bce", type=float, default=None)
     p.add_argument("--lambda-l1", type=float, default=None)
     p.add_argument("--lambda-protect", type=float, default=None)
+    p.add_argument("--lambda-coarse", type=float, default=None,
+                   help="Weight for coarse head loss in dual-head model (default: 0.5)")
 
     # Soft target
     p.add_argument("--protection-radius", type=int, default=None)
@@ -115,9 +117,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--soft-target-mode", type=str, default=None)
 
     # Model
+    p.add_argument("--model", "--model-name", type=str, default=None,
+                   choices=["fast_scnn_dimming", "fast_scnn_dual_head", "dimming", "dual_head"],
+                   help="Model architecture: 'fast_scnn_dimming' (default) or 'fast_scnn_dual_head'")
     p.add_argument("--num-classes", type=int, default=None,
                    help="Number of output classes (default: 1 for binary dimming, >1 for multiclass pretraining)")
     p.add_argument("--dropout-p", type=float, default=None)
+    p.add_argument("--refinement-head", type=str, default=None,
+                   choices=["multiscale", "legacy_h8"],
+                   help="Refinement head type for dual-head model (default: multiscale)")
 
     # Checkpoint & Transfer Learning
     p.add_argument("--pretrained", type=str, default=None,
@@ -144,6 +152,12 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
     """Override config defaults with CLI arguments."""
     if args.data_root:
         cfg.data_root = Path(args.data_root)
+    if args.model is not None:
+        cfg.model_name = args.model
+    if args.lambda_coarse is not None:
+        cfg.lambda_coarse = args.lambda_coarse
+    if args.refinement_head is not None:
+        cfg.refinement_head = args.refinement_head
     if args.train_height is not None:
         cfg.train_height = args.train_height
     if args.train_width is not None:
@@ -234,10 +248,16 @@ def run_smoke_test(cfg: Config) -> None:
     logger.info(f"Device: {device}")
 
     # 1. Model
-    logger.info("\n1. Building model...")
-    model = FastSCNNDimming(
+    logger.info(f"\n1. Building model ({cfg.model_name})...")
+    is_dual_head = "dual" in cfg.model_name.lower()
+    model = build_model(
+        model_name=cfg.model_name,
+        num_classes=cfg.num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
+        refinement_head=cfg.refinement_head,
+        prompt_gate_mode=cfg.prompt_gate_mode,
+        prompt_gate_strength=cfg.prompt_gate_strength,
     ).to(device)
     total_params, trainable_params = count_parameters(model)
     logger.info(f"   Total params: {total_params:,}")
@@ -248,7 +268,8 @@ def run_smoke_test(cfg: Config) -> None:
     B = 2
     x = torch.randn(B, 3, cfg.train_height, cfg.train_width, device=device)
     model.train()
-    logits = model(x)
+    out = model(x)
+    logits = out["fine_logits"] if isinstance(out, dict) else out
     assert logits.shape == (B, 1, cfg.train_height, cfg.train_width), (
         f"Expected [B, 1, {cfg.train_height}, {cfg.train_width}], got {list(logits.shape)}"
     )
@@ -272,14 +293,17 @@ def run_smoke_test(cfg: Config) -> None:
 
     # 4. Loss
     logger.info("\n4. Loss computation...")
-    criterion = DimmingLoss(
+    criterion = build_criterion(
+        num_classes=cfg.num_classes,
         lambda_bce=cfg.lambda_bce,
         lambda_l1=cfg.lambda_l1,
         lambda_protect=cfg.lambda_protect,
+        is_dual_head=is_dual_head,
+        lambda_coarse=cfg.lambda_coarse,
     )
     soft_target = torch.rand(B, 1, cfg.train_height, cfg.train_width, device=device)
     binary_mask = (soft_target > 0.5).float()
-    losses = criterion(logits, soft_target, binary_mask)
+    losses = criterion(out, soft_target, binary_mask)
     logger.info(f"   total: {losses['total'].item():.4f}")
     logger.info(f"   bce:   {losses['bce'].item():.4f}")
     logger.info(f"   l1:    {losses['l1'].item():.4f}")
@@ -299,8 +323,11 @@ def run_smoke_test(cfg: Config) -> None:
     logger.info("\n6. Validation metrics...")
     model.eval()
     with torch.no_grad():
-        logits_val = model(x)
-        prob = torch.sigmoid(logits_val)
+        out_val = model(x)
+        if isinstance(out_val, dict):
+            prob = out_val.get("fine_prob", torch.sigmoid(out_val["fine_logits"]))
+        else:
+            prob = torch.sigmoid(out_val)
 
     metrics = MetricAccumulator()
     metrics.update(prob, soft_target, binary_mask)
@@ -418,8 +445,8 @@ def train_one_epoch(
         # AMP forward
         use_amp = cfg.amp and device.type == "cuda"
         with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(images)
-            losses = criterion(logits, soft_targets, binary_masks)
+            outputs = model(images)
+            losses = criterion(outputs, soft_targets, binary_masks)
 
         # Backward
         scaler.scale(losses["total"]).backward()
@@ -448,6 +475,9 @@ def train_one_epoch(
 
         if global_step % 50 == 0:
             writer.add_scalar("train/loss_total", losses["total"].item(), global_step)
+            if "fine_total" in losses:
+                writer.add_scalar("train/loss_fine", losses["fine_total"].item(), global_step)
+                writer.add_scalar("train/loss_coarse", losses["coarse_total"].item(), global_step)
             writer.add_scalar("train/loss_bce", losses["bce"].item(), global_step)
             writer.add_scalar("train/loss_l1", losses["l1"].item(), global_step)
             writer.add_scalar("train/loss_protect", losses["protect"].item(), global_step)
@@ -497,18 +527,24 @@ def validate(
 
         use_amp = cfg.amp and device.type == "cuda"
         with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(images)
-            losses = criterion(logits, soft_targets, binary_masks)
+            outputs = model(images)
+            losses = criterion(outputs, soft_targets, binary_masks)
 
         total_loss += losses["total"].item()
         num_batches += 1
 
+        if isinstance(outputs, dict):
+            main_logits = outputs["fine_logits"]
+            main_prob = outputs.get("fine_prob", torch.sigmoid(main_logits))
+        else:
+            main_logits = outputs
+            main_prob = torch.sigmoid(outputs)
+
         if cfg.num_classes > 1:
-            preds = torch.argmax(logits, dim=1)
+            preds = torch.argmax(main_logits, dim=1)
             metric_acc.update(preds, soft_targets)
         else:
-            prob = torch.sigmoid(logits)
-            metric_acc.update(prob, soft_targets, binary_masks)
+            metric_acc.update(main_prob, soft_targets, binary_masks)
 
     avg_loss = total_loss / max(num_batches, 1)
     metrics = metric_acc.compute()
@@ -567,12 +603,18 @@ def main() -> None:
         json.dump(config_json, f, indent=2)
 
     # Build model
-    model = FastSCNNDimming(
+    is_dual_head = "dual" in cfg.model_name.lower()
+    model = build_model(
+        model_name=cfg.model_name,
         num_classes=cfg.num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
+        refinement_head=cfg.refinement_head,
+        prompt_gate_mode=cfg.prompt_gate_mode,
+        prompt_gate_strength=cfg.prompt_gate_strength,
     ).to(device)
     total_params, trainable_params = count_parameters(model)
+    logger.info(f"Model architecture: {cfg.model_name}")
     logger.info(f"Model parameters: {total_params:,} total, {trainable_params:,} trainable")
     logger.info(f"Number of classes (output channels): {cfg.num_classes}")
     logger.info(f"Input resolution: H={cfg.train_height}, W={cfg.train_width}")
@@ -621,15 +663,18 @@ def main() -> None:
         lambda_bce=cfg.lambda_bce,
         lambda_l1=cfg.lambda_l1,
         lambda_protect=cfg.lambda_protect,
+        is_dual_head=is_dual_head,
+        lambda_coarse=cfg.lambda_coarse,
     )
     if cfg.num_classes > 1:
         logger.info(
-            f"Loss criterion: MulticlassCrossEntropyLoss (num_classes={cfg.num_classes}, ignore_index=255)"
+            f"Loss criterion: MulticlassCrossEntropyLoss (num_classes={cfg.num_classes}, ignore_index=255, is_dual_head={is_dual_head})"
         )
     else:
         logger.info(
             f"Loss weights: BCE={cfg.lambda_bce}, L1={cfg.lambda_l1}, "
-            f"Protect={cfg.lambda_protect}"
+            f"Protect={cfg.lambda_protect}, is_dual_head={is_dual_head}"
+            + (f" (CoarseWeight={cfg.lambda_coarse})" if is_dual_head else "")
         )
 
     # Optimizer
@@ -860,10 +905,13 @@ def main() -> None:
                     imgs = vis_batch["image"].to(device)
                     b_masks = vis_batch["binary_mask"]
                     s_masks = vis_batch["soft_mask"]
-                    if cfg.num_classes > 1:
-                        preds = torch.argmax(model(imgs), dim=1, keepdim=True).cpu()
+                    vis_out = model(imgs)
+                    if isinstance(vis_out, dict):
+                        preds = vis_out.get("fine_prob", torch.sigmoid(vis_out["fine_logits"])).cpu()
+                    elif cfg.num_classes > 1:
+                        preds = torch.argmax(vis_out, dim=1, keepdim=True).cpu()
                     else:
-                        preds = torch.sigmoid(model(imgs)).cpu()
+                        preds = torch.sigmoid(vis_out).cpu()
 
                     vis_images_list.append(vis_batch["image"])
                     vis_masks_list.append(b_masks)
