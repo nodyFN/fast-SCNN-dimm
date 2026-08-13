@@ -143,6 +143,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-vis-samples", type=int, default=None)
     p.add_argument("--vis-interval", type=int, default=None)
 
+    # Augmentation
+    p.add_argument("--aug-brightness-limit", type=float, default=None)
+    p.add_argument("--aug-contrast-limit", type=float, default=None)
+    p.add_argument("--aug-hflip-p", type=float, default=None)
+    p.add_argument("--aug-gamma-p", type=float, default=None)
+    p.add_argument("--aug-color-jitter-p", type=float, default=None)
+    p.add_argument("--aug-clahe-p", type=float, default=None)
+    p.add_argument("--aug-hsv-p", type=float, default=None)
+
     # Smoke test
     p.add_argument("--smoke-test", action="store_true",
                    help="Run quick smoke test with synthetic data")
@@ -162,6 +171,20 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
         cfg.refinement_head = args.refinement_head
     if args.freeze_bn:
         cfg.freeze_bn = True
+    if args.aug_brightness_limit is not None:
+        cfg.aug_brightness_limit = args.aug_brightness_limit
+    if args.aug_contrast_limit is not None:
+        cfg.aug_contrast_limit = args.aug_contrast_limit
+    if args.aug_hflip_p is not None:
+        cfg.aug_hflip_p = args.aug_hflip_p
+    if args.aug_gamma_p is not None:
+        cfg.aug_gamma_p = args.aug_gamma_p
+    if args.aug_color_jitter_p is not None:
+        cfg.aug_color_jitter_p = args.aug_color_jitter_p
+    if args.aug_clahe_p is not None:
+        cfg.aug_clahe_p = args.aug_clahe_p
+    if args.aug_hsv_p is not None:
+        cfg.aug_hsv_p = args.aug_hsv_p
     if args.train_height is not None:
         cfg.train_height = args.train_height
     if args.train_width is not None:
@@ -693,6 +716,10 @@ def main() -> None:
         aug_brightness_limit=cfg.aug_brightness_limit,
         aug_contrast_limit=cfg.aug_contrast_limit,
         aug_hflip_p=cfg.aug_hflip_p,
+        aug_gamma_p=cfg.aug_gamma_p,
+        aug_color_jitter_p=cfg.aug_color_jitter_p,
+        aug_clahe_p=cfg.aug_clahe_p,
+        aug_hsv_p=cfg.aug_hsv_p,
     )
     train_loader = loaders["train"]
     val_loader = loaders["val"]

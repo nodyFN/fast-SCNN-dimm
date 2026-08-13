@@ -127,6 +127,10 @@ class Config:
     aug_brightness_limit: float = 0.2
     aug_contrast_limit: float = 0.2
     aug_hflip_p: float = 0.5
+    aug_gamma_p: float = 0.5            # Random Gamma correction probability
+    aug_color_jitter_p: float = 0.5     # Color Jitter probability
+    aug_clahe_p: float = 0.3            # CLAHE contrast enhancement probability
+    aug_hsv_p: float = 0.5              # Hue/Saturation/Value shift probability
 
     # ── Display ───────────────────────────────────────────────────────
     no_tqdm: bool = False

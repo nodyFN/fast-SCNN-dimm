@@ -105,6 +105,10 @@ class DimmingDataset(Dataset):
         aug_brightness_limit: float = 0.2,
         aug_contrast_limit: float = 0.2,
         aug_hflip_p: float = 0.5,
+        aug_gamma_p: float = 0.5,
+        aug_color_jitter_p: float = 0.5,
+        aug_clahe_p: float = 0.3,
+        aug_hsv_p: float = 0.5,
     ) -> None:
         self.root = Path(root)
         self.image_dir = self.root / "images"
@@ -140,6 +144,10 @@ class DimmingDataset(Dataset):
             aug_brightness_limit=aug_brightness_limit,
             contrast_limit=aug_contrast_limit,
             aug_hflip_p=aug_hflip_p,
+            aug_gamma_p=aug_gamma_p,
+            aug_color_jitter_p=aug_color_jitter_p,
+            aug_clahe_p=aug_clahe_p,
+            aug_hsv_p=aug_hsv_p,
         )
 
     def _discover_pairs(self) -> List[Tuple[Path, Path]]:
@@ -170,6 +178,10 @@ class DimmingDataset(Dataset):
         aug_brightness_limit: float,
         contrast_limit: float,
         aug_hflip_p: float,
+        aug_gamma_p: float = 0.5,
+        aug_color_jitter_p: float = 0.5,
+        aug_clahe_p: float = 0.3,
+        aug_hsv_p: float = 0.5,
     ) -> A.Compose:
         """Build Albumentations transform pipeline.
 
@@ -178,7 +190,7 @@ class DimmingDataset(Dataset):
            - Image uses cv2.INTER_LINEAR
            - Mask uses cv2.INTER_NEAREST (preserves binary values)
         2. Horizontal flip
-        3. Color augmentations (brightness, contrast) — image only
+        3. Color augmentations (gamma, jitter, clahe, hsv) — image only
         4. Normalize — image only
         5. ToTensor
         6. Soft target is generated from the FINAL binary mask after all transforms
@@ -194,11 +206,24 @@ class DimmingDataset(Dataset):
                 ),
                 # Horizontal flip
                 A.HorizontalFlip(p=aug_hflip_p),
-                # Color augmentations (image only, not mask)
-                A.RandomBrightnessContrast(
-                    brightness_limit=aug_brightness_limit,
-                    contrast_limit=contrast_limit,
-                    p=0.5,
+                # Non-linear exposure / gamma change
+                A.RandomGamma(gamma_limit=(80, 120), p=aug_gamma_p),
+                # Comprehensive color & illumination jitter
+                A.ColorJitter(
+                    brightness=aug_brightness_limit,
+                    contrast=contrast_limit,
+                    saturation=0.2,
+                    hue=0.05,
+                    p=aug_color_jitter_p,
+                ),
+                # CLAHE local contrast adjustment (helps with shadows/highlights)
+                A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=aug_clahe_p),
+                # Hue / Saturation / Value shift
+                A.HueSaturationValue(
+                    hue_shift_limit=15,
+                    sat_shift_limit=20,
+                    val_shift_limit=20,
+                    p=aug_hsv_p,
                 ),
                 # Normalize
                 A.Normalize(
@@ -342,6 +367,10 @@ def build_dataloaders(
     aug_brightness_limit: float = 0.2,
     aug_contrast_limit: float = 0.2,
     aug_hflip_p: float = 0.5,
+    aug_gamma_p: float = 0.5,
+    aug_color_jitter_p: float = 0.5,
+    aug_clahe_p: float = 0.3,
+    aug_hsv_p: float = 0.5,
 ) -> Dict[str, DataLoader]:
     """Build train / val / test DataLoaders.
 
@@ -383,6 +412,10 @@ def build_dataloaders(
                 aug_brightness_limit=aug_brightness_limit,
                 aug_contrast_limit=aug_contrast_limit,
                 aug_hflip_p=aug_hflip_p,
+                aug_gamma_p=aug_gamma_p,
+                aug_color_jitter_p=aug_color_jitter_p,
+                aug_clahe_p=aug_clahe_p,
+                aug_hsv_p=aug_hsv_p,
             )
         except (FileNotFoundError, RuntimeError) as e:
             if split == "test":
