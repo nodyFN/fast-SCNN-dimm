@@ -255,7 +255,7 @@ class LearningToDownsample(nn.Module):
         # Layer 2: DSConv stride=2
         self.dsconv1 = DepthwiseSeparableConv(32, 48, stride=2)
         # [PROJECT DECISION] Layer 3: DSConv stride=1 (was stride=2 in original)
-        self.dsconv2 = DepthwiseSeparableConv(48, 64, stride=1)
+        self.dsconv2 = DepthwiseSeparableConv(48, 64, stride=2)
 
     def forward_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Forward and return intermediate outputs at each layer."""
