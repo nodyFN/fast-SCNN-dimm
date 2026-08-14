@@ -91,6 +91,7 @@ class Config:
     lambda_l1: float = 1.0
     lambda_protect: float = 2.0
     lambda_coarse: float = 0.5         # Weight for CoarseHead loss in DualHead model
+    coarse_only_epochs: int = 5         # Number of epochs to train only CoarseHead in DualHead model
 
     # ── Checkpointing ─────────────────────────────────────────────────
     checkpoint_save_interval: int = 0   # 0 = disabled; N = save every N epochs

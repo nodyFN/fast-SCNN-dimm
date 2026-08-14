@@ -474,6 +474,9 @@ def train_one_epoch(
     global_step : int (updated)
     """
     model.train()
+    criterion.train()
+    if hasattr(criterion, "current_epoch"):
+        criterion.current_epoch = epoch
     if getattr(cfg, "freeze_bn", False):
         for m in model.modules():
             if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
@@ -570,6 +573,7 @@ def validate(
     metrics : dict
     """
     model.eval()
+    criterion.eval()
     total_loss = 0.0
     num_batches = 0
     if cfg.num_classes > 1:
@@ -734,6 +738,7 @@ def main() -> None:
         lambda_protect=cfg.lambda_protect,
         is_dual_head=is_dual_head,
         lambda_coarse=cfg.lambda_coarse,
+        coarse_only_epochs=cfg.coarse_only_epochs if is_dual_head else 0,
     )
     if cfg.num_classes > 1:
         logger.info(

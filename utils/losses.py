@@ -210,10 +210,13 @@ class DualHeadLoss(nn.Module):
         self,
         base_loss: nn.Module,
         lambda_coarse: float = 0.5,
+        coarse_only_epochs: int = 0,
     ) -> None:
         super().__init__()
         self.base_loss = base_loss
         self.lambda_coarse = lambda_coarse
+        self.coarse_only_epochs = coarse_only_epochs
+        self.current_epoch = 0
 
     def forward(
         self,
@@ -228,15 +231,20 @@ class DualHeadLoss(nn.Module):
             fine_losses = self.base_loss(fine_logits, soft_target, binary_mask)
             coarse_losses = self.base_loss(coarse_logits, soft_target, binary_mask)
 
-            total = fine_losses["total"] + self.lambda_coarse * coarse_losses["total"]
+            if self.training and self.current_epoch < self.coarse_only_epochs:
+                total = self.lambda_coarse * coarse_losses["total"]
+                fine_weight = 0.0
+            else:
+                total = fine_losses["total"] + self.lambda_coarse * coarse_losses["total"]
+                fine_weight = 1.0
 
             return {
                 "total": total,
-                "fine_total": fine_losses["total"],
+                "fine_total": fine_weight * fine_losses["total"],
                 "coarse_total": coarse_losses["total"],
-                "bce": fine_losses["bce"],
-                "l1": fine_losses["l1"],
-                "protect": fine_losses["protect"],
+                "bce": fine_weight * fine_losses["bce"],
+                "l1": fine_weight * fine_losses["l1"],
+                "protect": fine_weight * fine_losses["protect"],
                 "coarse_bce": coarse_losses["bce"],
             }
         else:
@@ -251,6 +259,7 @@ def build_criterion(
     ignore_index: int = 255,
     is_dual_head: bool = False,
     lambda_coarse: float = 0.5,
+    coarse_only_epochs: int = 0,
 ) -> nn.Module:
     """Build appropriate loss criterion based on num_classes and model type.
 
@@ -268,6 +277,10 @@ def build_criterion(
         )
 
     if is_dual_head:
-        return DualHeadLoss(base_loss=base, lambda_coarse=lambda_coarse)
+        return DualHeadLoss(
+            base_loss=base,
+            lambda_coarse=lambda_coarse,
+            coarse_only_epochs=coarse_only_epochs,
+        )
     return base
 
