@@ -32,7 +32,7 @@ import numpy as np
 import torch
 
 from config import Config
-from models.fast_scnn_dimming import FastSCNNDimming
+from models import build_model
 from utils.checkpoint import load_checkpoint
 from utils.visualization import (
     add_panel_label,
@@ -56,7 +56,7 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Inference for Fast-SCNN Dimming")
+    p = argparse.ArgumentParser(description="Inference for Fast-SCNN Dimming / Dual-Head")
     p.add_argument("--weights", type=str, required=True, help="Path to checkpoint")
     p.add_argument("--input", type=str, required=True, help="Input image or folder")
     p.add_argument("--output-dir", type=str, default=None)
@@ -129,8 +129,11 @@ def run_inference(
     """
     tensor = preprocess(image_bgr, height, width).to(device)
     with torch.inference_mode():
-        logits = model(tensor)
-        prob = torch.sigmoid(logits)
+        out = model(tensor)
+        if isinstance(out, dict):
+            prob = out.get("fine_prob", torch.sigmoid(out["fine_logits"]))
+        else:
+            prob = torch.sigmoid(out)
     return prob[0, 0].cpu().numpy()
 
 
@@ -208,13 +211,25 @@ def main() -> None:
     elif "num_classes" in saved_config:
         num_classes = int(saved_config["num_classes"])
 
+    model_name = "fast_scnn_dimming"
+    if isinstance(state_dict, dict):
+        if any("coarse_head" in k for k in state_dict.keys()):
+            model_name = "fast_scnn_dual_head"
+        elif "model_name" in saved_config:
+            model_name = saved_config["model_name"]
+
     logger.info(f"Model output channels (num_classes): {num_classes}")
+    logger.info(f"Detected model architecture: {model_name}")
 
     # Load model
-    model = FastSCNNDimming(
+    model = build_model(
+        model_name=model_name,
         num_classes=num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
+        refinement_head=saved_config.get("refinement_head", "multiscale"),
+        prompt_gate_mode=saved_config.get("prompt_gate_mode", "bidirectional"),
+        prompt_gate_strength=saved_config.get("prompt_gate_strength", 0.5),
     ).to(device)
     ckpt = load_checkpoint(args.weights, model, map_location=device, weights_only=True)
     model.eval()
