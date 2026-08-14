@@ -216,7 +216,7 @@ class LegacyRefinementHead(nn.Module):
         dropout_p: float = 0.1,
         prompt_gate_mode: str = "legacy_additive",
         prompt_gate_strength: float = 0.5,
-        resolution_hierarchy: bool = True,
+        resolution_hierarchy: bool = False,
     ) -> None:
         super().__init__()
         self.prompt_gate_mode = prompt_gate_mode
@@ -377,7 +377,7 @@ class MultiscaleRefinementHead(nn.Module):
         fine_dropout: float = 0.1,
         prompt_gate_mode: str = "bidirectional",
         prompt_gate_strength: float = 0.5,
-        resolution_hierarchy: bool = True,
+        resolution_hierarchy: bool = False,
         fine_image_reference: bool = False,
         fine_image_ref_h4_channels: int = 16,
         fine_image_ref_h2_channels: int = 8,
@@ -602,7 +602,7 @@ class FastSCNNdualhead(nn.Module):
         fine_dropout: float = 0.1,
         prompt_detach: bool = True,
         uncertainty_floor: float = 0.15,
-        resolution_hierarchy: bool = True,
+        resolution_hierarchy: bool = False,
         fine_image_reference: bool = False,
         fine_image_ref_h4_channels: int = 16,
         fine_image_ref_h2_channels: int = 8,
