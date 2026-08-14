@@ -102,13 +102,21 @@ def main() -> None:
     logger.info(f"Model output channels (num_classes): {num_classes}")
     logger.info(f"Detected model architecture: {model_name}")
 
+    refinement_head = saved_config.get("refinement_head", "multiscale")
+    if isinstance(state_dict, dict) and model_name == "fast_scnn_dual_head":
+        if any("refinement_head.dsconv" in k for k in state_dict.keys()):
+            refinement_head = "legacy_h8"
+        elif any("refinement_head.h8_proj" in k for k in state_dict.keys()):
+            refinement_head = "multiscale"
+        logger.info(f"Detected refinement head type: {refinement_head}")
+
     # Load model
     model = build_model(
         model_name=model_name,
         num_classes=num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
-        refinement_head=saved_config.get("refinement_head", "multiscale"),
+        refinement_head=refinement_head,
         prompt_gate_mode=saved_config.get("prompt_gate_mode", "bidirectional"),
         prompt_gate_strength=saved_config.get("prompt_gate_strength", 0.5),
     ).to(device)
