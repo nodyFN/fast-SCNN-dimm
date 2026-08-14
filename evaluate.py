@@ -22,9 +22,9 @@ import torch
 
 from config import Config
 from dataset import build_dataloaders
-from models.fast_scnn_dimming import FastSCNNDimming, count_parameters
+from models import build_model, count_parameters
 from utils.checkpoint import load_checkpoint
-from utils.losses import DimmingLoss
+from utils.losses import build_criterion
 from utils.metrics import MetricAccumulator, format_metrics
 from utils.seed import seed_everything
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Evaluate Fast-SCNN Dimming")
+    p = argparse.ArgumentParser(description="Evaluate Fast-SCNN Dimming / Dual-Head")
     p.add_argument("--weights", type=str, required=True, help="Path to model checkpoint")
     p.add_argument("--data-root", type=str, default="duts_data")
     p.add_argument("--split", type=str, default="val", choices=["val", "test"])
@@ -78,10 +78,39 @@ def main() -> None:
     seed_everything(cfg.seed)
     logger.info(f"Device: {device}")
 
+    # Inspect checkpoint to auto-resolve model type and num_classes
+    raw_ckpt = torch.load(args.weights, map_location=device, weights_only=False)
+    saved_config = raw_ckpt.get("config", {}) if isinstance(raw_ckpt, dict) else {}
+    state_dict = raw_ckpt.get("model_state_dict", raw_ckpt) if isinstance(raw_ckpt, dict) else raw_ckpt
+
+    num_classes = 1
+    if isinstance(state_dict, dict) and "classifier.conv.bias" in state_dict:
+        num_classes = state_dict["classifier.conv.bias"].shape[0]
+    elif "num_classes" in saved_config:
+        num_classes = int(saved_config["num_classes"])
+
+    model_name = "fast_scnn_dimming"
+    is_dual_head = False
+    if isinstance(state_dict, dict):
+        if any("coarse_head" in k for k in state_dict.keys()):
+            model_name = "fast_scnn_dual_head"
+            is_dual_head = True
+        elif "model_name" in saved_config:
+            model_name = saved_config["model_name"]
+            is_dual_head = "dual" in model_name.lower()
+
+    logger.info(f"Model output channels (num_classes): {num_classes}")
+    logger.info(f"Detected model architecture: {model_name}")
+
     # Load model
-    model = FastSCNNDimming(
+    model = build_model(
+        model_name=model_name,
+        num_classes=num_classes,
         ppm_pool_sizes=cfg.ppm_pool_sizes,
         dropout_p=cfg.dropout_p,
+        refinement_head=saved_config.get("refinement_head", "multiscale"),
+        prompt_gate_mode=saved_config.get("prompt_gate_mode", "bidirectional"),
+        prompt_gate_strength=saved_config.get("prompt_gate_strength", 0.5),
     ).to(device)
 
     ckpt = load_checkpoint(args.weights, model, map_location=device, weights_only=True)
@@ -90,7 +119,6 @@ def main() -> None:
         logger.info(f"  Checkpoint epoch: {ckpt['epoch']}")
 
     # Try to restore config from checkpoint
-    saved_config = ckpt.get("config", {})
     if saved_config:
         if args.val_height is None and "val_height" in saved_config:
             cfg.val_height = int(saved_config["val_height"])
@@ -137,10 +165,13 @@ def main() -> None:
 
     # Evaluate
     model.eval()
-    criterion = DimmingLoss(
+    criterion = build_criterion(
+        num_classes=num_classes,
         lambda_bce=cfg.lambda_bce,
         lambda_l1=cfg.lambda_l1,
         lambda_protect=cfg.lambda_protect,
+        is_dual_head=is_dual_head,
+        lambda_coarse=saved_config.get("lambda_coarse", 0.5),
     )
     metric_acc = MetricAccumulator()
     total_loss = 0.0
@@ -152,13 +183,17 @@ def main() -> None:
             soft_targets = batch["soft_mask"].to(device, non_blocking=True)
             binary_masks = batch["binary_mask"].to(device, non_blocking=True)
 
-            logits = model(images)
-            losses = criterion(logits, soft_targets, binary_masks)
+            outputs = model(images)
+            losses = criterion(outputs, soft_targets, binary_masks)
 
             total_loss += losses["total"].item()
             num_batches += 1
 
-            prob = torch.sigmoid(logits)
+            if isinstance(outputs, dict):
+                main_logits = outputs["fine_logits"]
+                prob = outputs.get("fine_prob", torch.sigmoid(main_logits))
+            else:
+                prob = torch.sigmoid(outputs)
             metric_acc.update(prob, soft_targets, binary_masks)
 
     avg_loss = total_loss / max(num_batches, 1)
