@@ -92,6 +92,8 @@ class Config:
     lambda_protect: float = 2.0
     lambda_coarse: float = 0.5         # Weight for CoarseHead loss in DualHead model
     coarse_only_epochs: int = 5         # Number of epochs to train only CoarseHead in DualHead model
+    coarse_edge_mask_kernel: int = 15   # Edge mask kernel size for CoarseHead loss (0 to disable)
+    coarse_target_dilation_kernel: int = 15 # Target dilation kernel size for CoarseHead loss (0 to disable)
 
     # ── Checkpointing ─────────────────────────────────────────────────
     checkpoint_save_interval: int = 0   # 0 = disabled; N = save every N epochs

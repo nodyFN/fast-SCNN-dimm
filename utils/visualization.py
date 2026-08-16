@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,8 @@ def save_training_visualization(
     num_samples: int = 4,
     min_brightness: float = 0.5,
     num_classes: int = 1,
+    coarse_predictions: Optional[torch.Tensor] = None,
+    coarse_target_dilation_kernel: int = 15,
 ) -> None:
     """Save training-time validation visualization with labeled headers.
 
@@ -310,6 +313,17 @@ def save_training_visualization(
             row = np.concatenate([panel_orig, panel_gt, panel_pred, panel_overlay], axis=1)
             rows.append(row)
     else:
+        coarse_dilated_soft_targets = None
+        if coarse_predictions is not None and num_classes == 1:
+            if coarse_target_dilation_kernel > 0:
+                pad_dil = coarse_target_dilation_kernel // 2
+                coarse_dilated_soft_targets = F.max_pool2d(
+                    soft_targets.to(coarse_predictions.device),
+                    kernel_size=coarse_target_dilation_kernel,
+                    stride=1,
+                    padding=pad_dil
+                )
+
         for i in range(n):
             img = denormalize_image(images[i])
             binary = binary_masks[i, 0].detach().cpu().numpy()
@@ -336,10 +350,32 @@ def save_training_visualization(
             dimmed = create_dimmed_preview(img, pred, min_brightness)
             panel_dimmed = add_panel_label(dimmed, "Dimmed Preview")
 
-            row = np.concatenate(
-                [panel_orig, panel_binary, panel_gt_soft, panel_pred_gray, panel_pred_heat, panel_dimmed],
-                axis=1,
-            )
+            # Option 1 and Option 2 panels for Coarse Head
+            panels = [panel_orig, panel_binary]
+
+            if coarse_predictions is not None:
+                # 1. Coarse Dilated GT Soft (Gray)
+                if coarse_dilated_soft_targets is not None:
+                    c_gt = coarse_dilated_soft_targets[i, 0].detach().cpu().numpy()
+                else:
+                    c_gt = soft
+                c_gt_gray = (np.clip(c_gt, 0, 1) * 255).astype(np.uint8)
+                panel_c_gt = add_panel_label(
+                    cv2.cvtColor(c_gt_gray, cv2.COLOR_GRAY2BGR), "Coarse GT (Gray)"
+                )
+                panels.append(panel_c_gt)
+
+                # 2. Coarse Pred (Gray)
+                c_pred = coarse_predictions[i, 0].detach().cpu().numpy()
+                c_pred_gray = (np.clip(c_pred, 0, 1) * 255).astype(np.uint8)
+                panel_c_pred = add_panel_label(
+                    cv2.cvtColor(c_pred_gray, cv2.COLOR_GRAY2BGR), "Coarse Pred (Gray)"
+                )
+                panels.append(panel_c_pred)
+
+            panels.extend([panel_gt_soft, panel_pred_gray, panel_pred_heat, panel_dimmed])
+
+            row = np.concatenate(panels, axis=1)
             rows.append(row)
 
     if rows:

@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Tuple, Optional
 
 import cv2
 import numpy as np
@@ -119,22 +119,29 @@ def run_inference(
     height: int,
     width: int,
     device: torch.device,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Run model inference on a single image.
 
     Returns
     -------
-    prob : ndarray [H, W], float32 in [0, 1]
+    fine_prob : ndarray [H, W], float32 in [0, 1]
+        At model resolution (height × width).
+    coarse_prob : ndarray [H, W], float32 in [0, 1] or None
         At model resolution (height × width).
     """
     tensor = preprocess(image_bgr, height, width).to(device)
     with torch.inference_mode():
         out = model(tensor)
+        coarse_prob = None
         if isinstance(out, dict):
             prob = out.get("fine_prob", torch.sigmoid(out["fine_logits"]))
+            coarse_prob = out.get("coarse_prob", torch.sigmoid(out["coarse_logits"]))
         else:
             prob = torch.sigmoid(out)
-    return prob[0, 0].cpu().numpy()
+
+    fine_prob_np = prob[0, 0].cpu().numpy()
+    coarse_prob_np = coarse_prob[0, 0].cpu().numpy() if coarse_prob is not None else None
+    return fine_prob_np, coarse_prob_np
 
 
 def save_outputs(
@@ -142,6 +149,7 @@ def save_outputs(
     stem: str,
     image_bgr: np.ndarray,
     prob: np.ndarray,
+    coarse_prob: Optional[np.ndarray],
     min_brightness: float,
     threshold: float,
     resize_to_original: bool,
@@ -153,9 +161,11 @@ def save_outputs(
     # Optionally resize prediction back to original resolution
     if resize_to_original and (orig_h != model_h or orig_w != model_w):
         prob_display = cv2.resize(prob, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+        coarse_prob_display = cv2.resize(coarse_prob, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR) if coarse_prob is not None else None
         display_image = image_bgr
     else:
         prob_display = prob
+        coarse_prob_display = coarse_prob
         display_image = cv2.resize(image_bgr, (model_w, model_h), interpolation=cv2.INTER_LINEAR)
 
     # 1. Soft mask grayscale (0~255)
@@ -163,21 +173,33 @@ def save_outputs(
     cv2.imwrite(str(output_dir / f"{stem}_soft_gray.png"), soft_gray)
     cv2.imwrite(str(output_dir / f"{stem}_soft_mask.png"), soft_gray)
 
-    # 2. Binary threshold visualization
+    # 2. Coarse mask grayscale (Option 1 & 2 verification)
+    coarse_gray = None
+    if coarse_prob_display is not None:
+        coarse_gray = (np.clip(coarse_prob_display, 0, 1) * 255).astype(np.uint8)
+        cv2.imwrite(str(output_dir / f"{stem}_coarse_gray.png"), coarse_gray)
+
+    # 3. Binary threshold visualization
     binary_vis = ((prob_display >= threshold).astype(np.uint8)) * 255
     cv2.imwrite(str(output_dir / f"{stem}_binary.png"), binary_vis)
 
-    # 3. Heatmap
+    # 4. Heatmap
     heatmap = mask_to_heatmap(prob_display)
     cv2.imwrite(str(output_dir / f"{stem}_heatmap.png"), heatmap)
 
-    # 4. Dimmed preview
+    # 5. Dimmed preview
     dimmed = create_dimmed_preview(display_image, prob_display, min_brightness)
     cv2.imwrite(str(output_dir / f"{stem}_dimmed.jpg"), dimmed)
 
-    # 5. Side-by-side comparison (with labeled headers)
+    # 6. Side-by-side comparison (with labeled headers)
     panel_orig = add_panel_label(display_image.copy(), "Original RGB")
     panel_binary = add_panel_label(cv2.cvtColor(binary_vis, cv2.COLOR_GRAY2BGR), f"Binary (>={threshold})")
+    
+    panels = [panel_orig, panel_binary]
+    if coarse_gray is not None:
+        panel_coarse_gray = add_panel_label(cv2.cvtColor(coarse_gray, cv2.COLOR_GRAY2BGR), "Coarse Mask (Gray)")
+        panels.append(panel_coarse_gray)
+
     panel_gray = add_panel_label(cv2.cvtColor(soft_gray, cv2.COLOR_GRAY2BGR), "Soft Mask (Gray)")
     panel_heatmap = add_panel_label(heatmap, "Soft Mask (Heatmap)")
     brightness_map = add_panel_label(
@@ -186,10 +208,9 @@ def save_outputs(
     )
     panel_dimmed = add_panel_label(dimmed, "Dimmed Preview")
 
-    side_by_side = np.concatenate(
-        [panel_orig, panel_binary, panel_gray, panel_heatmap, brightness_map, panel_dimmed],
-        axis=1,
-    )
+    panels.extend([panel_gray, panel_heatmap, brightness_map, panel_dimmed])
+
+    side_by_side = np.concatenate(panels, axis=1)
     cv2.imwrite(str(output_dir / f"{stem}_comparison.jpg"), side_by_side)
 
 
@@ -272,13 +293,14 @@ def main() -> None:
             logger.warning(f"Failed to load: {img_path}")
             continue
 
-        prob = run_inference(model, image_bgr, infer_h, infer_w, device)
+        prob, coarse_prob = run_inference(model, image_bgr, infer_h, infer_w, device)
 
         save_outputs(
             output_dir=output_dir,
             stem=img_path.stem,
             image_bgr=image_bgr,
             prob=prob,
+            coarse_prob=coarse_prob,
             min_brightness=args.min_brightness,
             threshold=args.threshold,
             resize_to_original=args.resize_to_original,

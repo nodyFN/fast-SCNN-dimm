@@ -257,7 +257,7 @@ class MulticlassMetricAccumulator:
         }
 
 
-def format_metrics(metrics: Dict[str, float]) -> str:
+def format_metrics(metrics: Dict[str, float], threshold: float = 0.5) -> str:
     """Format metrics dict into a human-readable multi-line string."""
     lines = []
     lines.append("=" * 50)
@@ -265,7 +265,7 @@ def format_metrics(metrics: Dict[str, float]) -> str:
     lines.append("=" * 50)
 
     # Binary segmentation
-    lines.append("\n--- Binary Segmentation (threshold=0.5) ---")
+    lines.append(f"\n--- Binary Segmentation (threshold={threshold}) ---")
     lines.append(f"  Foreground IoU     : {metrics.get('fg_iou', 0):.4f}")
     lines.append(f"  Mean IoU (mIoU)    : {metrics.get('miou', 0):.4f}")
     lines.append(f"  Dice               : {metrics.get('dice', 0):.4f}")

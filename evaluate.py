@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--protection-radius", type=int, default=None)
     p.add_argument("--transition-width", type=int, default=None)
     p.add_argument("--allow-threshold", action="store_true")
+    p.add_argument("--threshold", type=float, default=0.5, help="Binarization threshold for evaluation metrics (default: 0.5)")
     p.add_argument("--output-dir", type=str, default=None)
     return p.parse_args()
 
@@ -202,7 +203,7 @@ def main() -> None:
                 prob = outputs.get("fine_prob", torch.sigmoid(main_logits))
             else:
                 prob = torch.sigmoid(outputs)
-            metric_acc.update(prob, soft_targets, binary_masks)
+            metric_acc.update(prob, soft_targets, binary_masks, threshold=args.threshold)
 
     avg_loss = total_loss / max(num_batches, 1)
     metrics = metric_acc.compute()
@@ -210,7 +211,7 @@ def main() -> None:
 
     # Print results
     logger.info(f"\nAverage loss: {avg_loss:.4f}")
-    logger.info(format_metrics(metrics))
+    logger.info(format_metrics(metrics, threshold=args.threshold))
 
     # Save JSON summary
     output_dir = Path(args.output_dir) if args.output_dir else cfg.evaluation_dir
@@ -226,6 +227,7 @@ def main() -> None:
         "val_width": cfg.val_width,
         "protection_radius": cfg.protection_radius,
         "transition_width": cfg.transition_width,
+        "threshold": args.threshold,
         "metrics": metrics,
     }
     with open(json_path, "w") as f:

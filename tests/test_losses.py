@@ -145,6 +145,22 @@ class TestDimmingLoss:
         for key, val in losses.items():
             assert not torch.isnan(val), f"NaN in {key}"
 
+    def test_weighted_loss(self):
+        """Verify that passing weight applies correctly and affects loss."""
+        criterion = DimmingLoss()
+        logits = torch.randn(2, 1, 32, 32)
+        soft_target = torch.rand(2, 1, 32, 32)
+        binary_mask = (soft_target > 0.5).float()
+
+        # Create a weight mask that zeroes out the top half
+        weight = torch.ones(2, 1, 32, 32)
+        weight[:, :, :16, :] = 0.0
+
+        losses_unweighted = criterion(logits, soft_target, binary_mask)
+        losses_weighted = criterion(logits, soft_target, binary_mask, weight=weight)
+
+        assert losses_weighted["total"].item() != losses_unweighted["total"].item()
+
 
 class TestMulticlassLoss:
     """Test multiclass segmentation loss and criterion builder."""
@@ -171,3 +187,28 @@ class TestMulticlassLoss:
 
         crit_multi = build_criterion(num_classes=182)
         assert isinstance(crit_multi, MulticlassCrossEntropyLoss)
+
+
+class TestDualHeadLoss:
+    """Test the DualHeadLoss wrapper."""
+
+    def test_edge_masking(self):
+        from utils.losses import build_criterion
+        criterion = build_criterion(
+            num_classes=1,
+            is_dual_head=True,
+            coarse_edge_mask_kernel=15,
+            coarse_target_dilation_kernel=15,
+        )
+        # Pred is a dict with fine_logits and coarse_logits
+        pred = {
+            "fine_logits": torch.randn(2, 1, 32, 32),
+            "coarse_logits": torch.randn(2, 1, 32, 32),
+        }
+        soft_target = torch.rand(2, 1, 32, 32)
+        binary_mask = (soft_target > 0.5).float()
+
+        losses = criterion(pred, soft_target, binary_mask)
+        assert "total" in losses
+        assert "coarse_total" in losses
+        assert "fine_total" in losses

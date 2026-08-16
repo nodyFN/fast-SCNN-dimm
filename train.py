@@ -110,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lambda-protect", type=float, default=None)
     p.add_argument("--lambda-coarse", type=float, default=None,
                    help="Weight for coarse head loss in dual-head model (default: 0.5)")
+    p.add_argument("--coarse-edge-mask-kernel", type=int, default=None,
+                   help="Edge mask kernel size for CoarseHead loss (default: 15, 0 to disable)")
+    p.add_argument("--coarse-target-dilation-kernel", type=int, default=None,
+                   help="Target dilation kernel size for CoarseHead loss (default: 15, 0 to disable)")
+    p.add_argument("--coarse-only-epochs", type=int, default=None,
+                   help="Number of epochs to train only CoarseHead in DualHead model (default: 5)")
 
     # Soft target
     p.add_argument("--protection-radius", type=int, default=None)
@@ -167,6 +173,12 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
         cfg.model_name = args.model
     if args.lambda_coarse is not None:
         cfg.lambda_coarse = args.lambda_coarse
+    if args.coarse_edge_mask_kernel is not None:
+        cfg.coarse_edge_mask_kernel = args.coarse_edge_mask_kernel
+    if args.coarse_target_dilation_kernel is not None:
+        cfg.coarse_target_dilation_kernel = args.coarse_target_dilation_kernel
+    if args.coarse_only_epochs is not None:
+        cfg.coarse_only_epochs = args.coarse_only_epochs
     if args.refinement_head is not None:
         cfg.refinement_head = args.refinement_head
     if args.freeze_bn:
@@ -327,6 +339,8 @@ def run_smoke_test(cfg: Config) -> None:
         lambda_protect=cfg.lambda_protect,
         is_dual_head=is_dual_head,
         lambda_coarse=cfg.lambda_coarse,
+        coarse_edge_mask_kernel=cfg.coarse_edge_mask_kernel,
+        coarse_target_dilation_kernel=cfg.coarse_target_dilation_kernel,
     )
     soft_target = torch.rand(B, 1, cfg.train_height, cfg.train_width, device=device)
     binary_mask = (soft_target > 0.5).float()
@@ -738,7 +752,9 @@ def main() -> None:
         lambda_protect=cfg.lambda_protect,
         is_dual_head=is_dual_head,
         lambda_coarse=cfg.lambda_coarse,
-        coarse_only_epochs=cfg.coarse_only_epochs if is_dual_head else 0,
+        coarse_only_epochs=cfg.coarse_only_epochs,
+        coarse_edge_mask_kernel=cfg.coarse_edge_mask_kernel,
+        coarse_target_dilation_kernel=cfg.coarse_target_dilation_kernel,
     )
     if cfg.num_classes > 1:
         logger.info(
@@ -972,7 +988,7 @@ def main() -> None:
         # Visualization
         if epoch % cfg.vis_interval == 0 and cfg.num_vis_samples > 0:
             model.eval()
-            vis_images_list, vis_masks_list, vis_soft_list, vis_pred_list = [], [], [], []
+            vis_images_list, vis_masks_list, vis_soft_list, vis_pred_list, vis_coarse_pred_list = [], [], [], [], []
             total_collected = 0
             with torch.no_grad():
                 for vis_batch in val_loader:
@@ -980,8 +996,10 @@ def main() -> None:
                     b_masks = vis_batch["binary_mask"]
                     s_masks = vis_batch["soft_mask"]
                     vis_out = model(imgs)
+                    coarse_preds = None
                     if isinstance(vis_out, dict):
                         preds = vis_out.get("fine_prob", torch.sigmoid(vis_out["fine_logits"])).cpu()
+                        coarse_preds = vis_out.get("coarse_prob", torch.sigmoid(vis_out["coarse_logits"])).cpu()
                     elif cfg.num_classes > 1:
                         preds = torch.argmax(vis_out, dim=1, keepdim=True).cpu()
                     else:
@@ -991,6 +1009,8 @@ def main() -> None:
                     vis_masks_list.append(b_masks)
                     vis_soft_list.append(s_masks)
                     vis_pred_list.append(preds)
+                    if coarse_preds is not None:
+                        vis_coarse_pred_list.append(coarse_preds)
 
                     total_collected += imgs.size(0)
                     if total_collected >= cfg.num_vis_samples:
@@ -1002,6 +1022,10 @@ def main() -> None:
                 all_vis_soft = torch.cat(vis_soft_list, dim=0)[:cfg.num_vis_samples]
                 all_vis_preds = torch.cat(vis_pred_list, dim=0)[:cfg.num_vis_samples]
 
+                all_vis_coarse_preds = None
+                if vis_coarse_pred_list:
+                    all_vis_coarse_preds = torch.cat(vis_coarse_pred_list, dim=0)[:cfg.num_vis_samples]
+
                 save_training_visualization(
                     vis_dir / f"epoch_{epoch:04d}.jpg",
                     images=all_vis_imgs,
@@ -1011,6 +1035,8 @@ def main() -> None:
                     num_samples=cfg.num_vis_samples,
                     min_brightness=cfg.min_brightness,
                     num_classes=cfg.num_classes,
+                    coarse_predictions=all_vis_coarse_preds,
+                    coarse_target_dilation_kernel=cfg.coarse_target_dilation_kernel if is_dual_head else 0,
                 )
 
     writer.close()
