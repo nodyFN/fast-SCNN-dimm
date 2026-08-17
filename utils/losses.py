@@ -241,6 +241,7 @@ class DualHeadLoss(nn.Module):
         coarse_only_epochs: int = 0,
         coarse_edge_mask_kernel: int = 15,
         coarse_target_dilation_kernel: int = 15,
+        coarse_joint_training: bool = False,
     ) -> None:
         super().__init__()
         self.base_loss = base_loss
@@ -248,6 +249,7 @@ class DualHeadLoss(nn.Module):
         self.coarse_only_epochs = coarse_only_epochs
         self.coarse_edge_mask_kernel = coarse_edge_mask_kernel
         self.coarse_target_dilation_kernel = coarse_target_dilation_kernel
+        self.coarse_joint_training = coarse_joint_training
         self.current_epoch = 0
 
     def forward(
@@ -286,9 +288,14 @@ class DualHeadLoss(nn.Module):
                 fine_weight = 0.0
                 coarse_train_weight = 1.0
             else:
-                total = fine_losses["total"]
-                fine_weight = 1.0
-                coarse_train_weight = 0.0
+                if self.coarse_joint_training:
+                    total = fine_losses["total"] + self.lambda_coarse * coarse_losses["total"]
+                    fine_weight = 1.0
+                    coarse_train_weight = 1.0
+                else:
+                    total = fine_losses["total"]
+                    fine_weight = 1.0
+                    coarse_train_weight = 0.0
 
             return {
                 "total": total,
@@ -314,6 +321,7 @@ def build_criterion(
     coarse_only_epochs: int = 0,
     coarse_edge_mask_kernel: int = 15,
     coarse_target_dilation_kernel: int = 15,
+    coarse_joint_training: bool = False,
 ) -> nn.Module:
     """Build appropriate loss criterion based on num_classes and model type.
 
@@ -337,6 +345,7 @@ def build_criterion(
             coarse_only_epochs=coarse_only_epochs,
             coarse_edge_mask_kernel=coarse_edge_mask_kernel,
             coarse_target_dilation_kernel=coarse_target_dilation_kernel,
+            coarse_joint_training=coarse_joint_training,
         )
     return base
 

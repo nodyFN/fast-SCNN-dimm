@@ -212,3 +212,36 @@ class TestDualHeadLoss:
         assert "total" in losses
         assert "coarse_total" in losses
         assert "fine_total" in losses
+
+    def test_joint_training(self):
+        from utils.losses import build_criterion
+        # 1. With coarse_joint_training=False
+        crit_sep = build_criterion(
+            num_classes=1,
+            is_dual_head=True,
+            coarse_only_epochs=5,
+            coarse_joint_training=False,
+        )
+        crit_sep.current_epoch = 10  # Phase 2 (post-coarse-only)
+        pred = {
+            "fine_logits": torch.randn(2, 1, 32, 32),
+            "coarse_logits": torch.randn(2, 1, 32, 32),
+        }
+        soft_target = torch.rand(2, 1, 32, 32)
+        binary_mask = (soft_target > 0.5).float()
+        
+        losses_sep = crit_sep(pred, soft_target, binary_mask)
+        # coarse_total should be 0 because coarse training is disabled
+        assert losses_sep["coarse_total"].item() == 0.0
+
+        # 2. With coarse_joint_training=True
+        crit_joint = build_criterion(
+            num_classes=1,
+            is_dual_head=True,
+            coarse_only_epochs=5,
+            coarse_joint_training=True,
+        )
+        crit_joint.current_epoch = 10  # Phase 2
+        losses_joint = crit_joint(pred, soft_target, binary_mask)
+        # coarse_total should be non-zero since coarse head is trained jointly
+        assert losses_joint["coarse_total"].item() > 0.0

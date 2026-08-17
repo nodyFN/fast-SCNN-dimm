@@ -116,6 +116,8 @@ def parse_args() -> argparse.Namespace:
                    help="Target dilation kernel size for CoarseHead loss (default: 15, 0 to disable)")
     p.add_argument("--coarse-only-epochs", type=int, default=None,
                    help="Number of epochs to train only CoarseHead in DualHead model (default: 5)")
+    p.add_argument("--coarse-joint-training", action="store_true",
+                   help="Continue training CoarseHead jointly with FineHead after coarse-only epochs")
 
     # Soft target
     p.add_argument("--protection-radius", type=int, default=None)
@@ -179,6 +181,8 @@ def apply_args_to_config(args: argparse.Namespace, cfg: Config) -> Config:
         cfg.coarse_target_dilation_kernel = args.coarse_target_dilation_kernel
     if args.coarse_only_epochs is not None:
         cfg.coarse_only_epochs = args.coarse_only_epochs
+    if args.coarse_joint_training:
+        cfg.coarse_joint_training = True
     if args.refinement_head is not None:
         cfg.refinement_head = args.refinement_head
     if args.freeze_bn:
@@ -341,6 +345,7 @@ def run_smoke_test(cfg: Config) -> None:
         lambda_coarse=cfg.lambda_coarse,
         coarse_edge_mask_kernel=cfg.coarse_edge_mask_kernel,
         coarse_target_dilation_kernel=cfg.coarse_target_dilation_kernel,
+        coarse_joint_training=cfg.coarse_joint_training,
     )
     soft_target = torch.rand(B, 1, cfg.train_height, cfg.train_width, device=device)
     binary_mask = (soft_target > 0.5).float()
@@ -755,6 +760,7 @@ def main() -> None:
         coarse_only_epochs=cfg.coarse_only_epochs,
         coarse_edge_mask_kernel=cfg.coarse_edge_mask_kernel,
         coarse_target_dilation_kernel=cfg.coarse_target_dilation_kernel,
+        coarse_joint_training=cfg.coarse_joint_training,
     )
     if cfg.num_classes > 1:
         logger.info(
