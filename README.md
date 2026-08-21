@@ -44,21 +44,33 @@ During data loading, each sample returns a **binary mask** (original foreground)
 
 ---
 
-## 🖥️ GPU Selection on Multi-GPU Server (gportal2)
+## 🖥️ Server Optimization Tips (gportal2)
 
 If you are running on a shared multi-GPU server like **gportal2**:
 
-1. Check current GPU utilization to see which GPU is idle by running:
-   ```bash
-   nvidia-smi
-   ```
-2. Specify which GPU to use by prepending `CUDA_VISIBLE_DEVICES=id` (where `id` is the index of the free GPU, e.g., `0` or `1`) when executing the scripts, or modify the variable directly in the shell scripts (`train.sh`, `test.sh`, `eval.sh`):
-   ```bash
-   # Run training on GPU 0
-   CUDA_VISIBLE_DEVICES=0 ./train.sh
+### 1. GPU Selection
+* Check current GPU utilization to see which GPU is idle by running:
+  ```bash
+  nvidia-smi
+  ```
+* Specify which GPU to use by prepending `CUDA_VISIBLE_DEVICES=id` (where `id` is the index of the free GPU, e.g., `0` or `1`) when executing the scripts, or modify the variable directly in the shell scripts (`train.sh`, `test.sh`, `eval.sh`):
+  ```bash
+  # Run training on GPU 0
+  CUDA_VISIBLE_DEVICES=0 ./train.sh
 
-   # Run evaluation on GPU 1
-   CUDA_VISIBLE_DEVICES=1 ./eval.sh
+  # Run evaluation on GPU 1
+  CUDA_VISIBLE_DEVICES=1 ./eval.sh
+  ```
+
+### 2. Fast Dataset Access (/dev/shm RAM Disk)
+To prevent disk I/O bottlenecks and speed up dataset loading significantly, you can copy your dataset to the `/dev/shm` shared memory partition (RAM Disk):
+1. Copy the dataset directory to `/dev/shm`:
+   ```bash
+   cp -r ../dataset/data /dev/shm/data
+   ```
+2. In your scripts (`train.sh`, `test.sh`, `eval.sh`), update `--data-root` to point to `/dev/shm/data`:
+   ```bash
+   --data-root /dev/shm/data
    ```
 
 ---
