@@ -1,20 +1,5 @@
 # Fast-SCNN Dimming: Foreground Protection / Dimming Soft Mask Prediction
 
-This project implements a **Foreground Protection Mask** prediction system for TV SoC background dimming, built upon a modified **Fast-SCNN** architecture. It supports both **Single-Head (Original Dimming)** and **Dual-Head (Coarse-to-Fine)** models.
-
----
-
-## 📌 Task Definition
-
-> **This is NOT Alpha Matting.**
-
-This project predicts a **foreground protection mask** $M(x, y) \in [0, 1]$ representing **dimming protection strength**, not physical alpha transparency:
-* $M = 1$: Foreground core — fully protected brightness (no dimming).
-* $M = 0$: Far background — maximum dimming allowed (for power savings).
-* $0 < M < 1$: Transition / safety region — smooth cosine feathering.
-
----
-
 ## 📐 Architectures
 
 The project supports two main architectures:
@@ -56,6 +41,25 @@ dataset_root/
 During data loading, each sample returns a **binary mask** (original foreground) and a **soft mask** (expanded protection zone with cosine feathering):
 1. **Dilation**: Expands the foreground by `protection_radius`.
 2. **Feathering**: Creates a smooth transition region of `transition_width` using a cosine decay function.
+
+---
+
+## 🖥️ GPU Selection on Multi-GPU Server (gportal2)
+
+If you are running on a shared multi-GPU server like **gportal2**:
+
+1. Check current GPU utilization to see which GPU is idle by running:
+   ```bash
+   nvidia-smi
+   ```
+2. Specify which GPU to use by prepending `CUDA_VISIBLE_DEVICES=id` (where `id` is the index of the free GPU, e.g., `0` or `1`) when executing the scripts, or modify the variable directly in the shell scripts (`train.sh`, `test.sh`, `eval.sh`):
+   ```bash
+   # Run training on GPU 0
+   CUDA_VISIBLE_DEVICES=0 ./train.sh
+
+   # Run evaluation on GPU 1
+   CUDA_VISIBLE_DEVICES=1 ./eval.sh
+   ```
 
 ---
 
@@ -143,9 +147,3 @@ Evaluation outputs a series of metric indicators to evaluate dimming quality:
 
 ---
 
-## 🧪 Tests
-
-Validate the code structure, shapes, losses, and metrics using PyTest:
-```bash
-pytest tests/ -v
-```
