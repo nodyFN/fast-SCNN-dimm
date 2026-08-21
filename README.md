@@ -1,6 +1,6 @@
 # Fast-SCNN Dimming: Foreground Protection / Dimming Soft Mask Prediction
 
-## 📐 Architectures
+## Architectures
 
 The project supports two main architectures:
 
@@ -20,7 +20,7 @@ A **Coarse-to-Fine** output stage designed to segment complex objects with high-
 
 ---
 
-## 📂 Dataset Format
+## Dataset Format
 
 Ensure your custom dataset is structured as follows:
 
@@ -44,7 +44,7 @@ During data loading, each sample returns a **binary mask** (original foreground)
 
 ---
 
-## 🖥️ Server Optimization Tips (gportal2)
+## Server Optimization Tips (gportal2)
 
 If you are running on a shared multi-GPU server like **gportal2**:
 
@@ -75,7 +75,7 @@ To prevent disk I/O bottlenecks and speed up dataset loading significantly, you 
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 Quickly run training, inference, and evaluation using the pre-configured shell scripts:
 
@@ -142,7 +142,7 @@ Evaluate model performance and compute detailed metrics using `eval.sh`:
 
 ---
 
-## 📊 Metrics Description
+## Metrics Description
 
 Evaluation outputs a series of metric indicators to evaluate dimming quality:
 1. **Binary Segmentation Metrics (at target `--threshold`)**:
