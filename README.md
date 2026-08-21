@@ -1,111 +1,46 @@
 # Fast-SCNN Dimming: Foreground Protection / Dimming Soft Mask Prediction
 
-## Task Definition
+This project implements a **Foreground Protection Mask** prediction system for TV SoC background dimming, built upon a modified **Fast-SCNN** architecture. It supports both **Single-Head (Original Dimming)** and **Dual-Head (Coarse-to-Fine)** models.
+
+---
+
+## 📌 Task Definition
 
 > **This is NOT Alpha Matting.**
 
-This project predicts a **foreground protection mask** for TV SoC background dimming:
-
-```
-M(x, y) ∈ [0, 1]
-
-M = 1: foreground — fully protected brightness
-M = 0: far background — maximum dimming allowed
-0 < M < 1: transition / safety region
-```
-
-The output represents **foreground protection strength / dimming protection strength**, not physical alpha transparency.
-
-### Use Case
-
-1. Identify foreground / salient objects that need brightness protection
-2. Foreground core → mask ≈ 1 (preserve brightness)
-3. Smooth transition zone around foreground
-4. Far background → mask ≈ 0 (allow dimming)
-5. Convert protection mask to brightness/dimming map for TV power reduction
+This project predicts a **foreground protection mask** $M(x, y) \in [0, 1]$ representing **dimming protection strength**, not physical alpha transparency:
+* $M = 1$: Foreground core — fully protected brightness (no dimming).
+* $M = 0$: Far background — maximum dimming allowed (for power savings).
+* $0 < M < 1$: Transition / safety region — smooth cosine feathering.
 
 ---
 
-## Architecture
+## 📐 Architectures
 
-Modified Fast-SCNN with higher-resolution feature maps for better mask detail.
+The project supports two main architectures:
 
-```
-Input [B, 3, 128, 224]                              ← [PROJECT DECISION] landscape TV
-        │
-        ▼
-Learning to Downsample
-  Layer 1: 3×3 Conv s=2      → [B, 32, 64, 112]     /2
-  Layer 2: 3×3 DSConv s=2    → [B, 48, 32, 56]      /4
-  Layer 3: 3×3 DSConv s=1    → [B, 64, 32, 56]      /4  ← [PROJECT DECISION] was s=2 in original
-        │
-        ├──── shallow skip [B, 64, 32, 56] ──────────┐
-        │                                             │
-        ▼                                             │
-Global Feature Extractor                              │
-  Stage 1: 64→64   t=6 n=3 s=2  → [B, 64, 16, 28]   /8
-  Stage 2: 64→96   t=6 n=3 s=2  → [B, 96, 8, 14]    /16 ← [PROJECT DECISION] was /32
-  Stage 3: 96→128  t=6 n=3 s=1  → [B, 128, 8, 14]   /16
-        │                                             │
-        ▼                                             │
-Pyramid Pooling Module (1, 2, 3, 6)                   │
-  [B, 128, 8, 14] → [B, 128, 8, 14]                  │
-        │                                             │
-        ▼                                             │
-Feature Fusion Module ◄───────────────────────────────┘
-  deep:    bilinear upsample 8×14 → 32×56
-           → DW Conv → BN → ReLU → 1×1 PW → BN
-  shallow: 1×1 Conv → BN
-  fused:   ReLU(high + low) → [B, 128, 32, 56]
-        │
-        ▼
-Classifier
-  DSConv 128→128
-  DSConv 128→128
-  Dropout(0.1)                                        ← [PROJECT DECISION]
-  1×1 Conv 128→1
-  → [B, 1, 32, 56]
-        │
-        ▼
-Bilinear Upsample → [B, 1, 128, 224]
-        │
-        ▼
-Raw logits (no sigmoid in model)
-        │
-        ▼
-torch.sigmoid() → Protection Mask [0, 1]
-```
+### 1. Single-Head Model (`fast_scnn_dimming`)
+An optimized Fast-SCNN structure with a single classifier head outputting a full-resolution soft mask.
+* **Learning to Downsample (LtD)**:
+  * Layer 1: Standard 3×3 Conv (stride 2) $\to$ $H/2$
+  * Layer 2: 3×3 DSConv (stride 2) $\to$ $H/4$
+  * Layer 3: 3×3 DSConv (stride 2) $\to$ $H/8$ (Original Fast-SCNN stride 2)
 
-### Key Architecture Changes from Original Fast-SCNN
-
-| Change | Original | This Project | Rationale |
-|---|---|---|---|
-| LtD output stride | /8 | /4 | Higher-res skip for mask detail |
-| Deep output stride | /32 | /16 | Better spatial preservation |
-| Output channels | 2 (classes) | 1 (BCE logit) | Binary task |
-| Input resolution | varies | 128×224 | Landscape TV |
+### 2. Dual-Head Model (`fast_scnn_dual_head`)
+A **Coarse-to-Fine** output stage designed to segment complex objects with high-frequency boundaries (such as fine feathers or hair):
+* **Coarse Head**: Performs global semantic localization at low resolution ($H/8$) on a 2x downsampled image.
+* **Sigmoid Detach (Stop-Gradient)**: The low-resolution coarse mask is converted to a spatial prompt using Sigmoid and detached (`.detach()`) to prevent Fine Head gradients from destabilizing global positioning.
+* **Fine Head (Refinement)**: A multi-scale decoder that receives the Coarse Prompt along with high-resolution skip connections ($H/2$ and $H/4$) directly from the LtD stage to reconstruct sharp details.
+* **Single-pass Mode (`resolution_hierarchy=False`)**: The backbone is run only once on the full-resolution image, sharing feature representations between both heads to reduce computational latency (FLOPs).
 
 ---
 
-## Input Resolution Convention
+## 📂 Dataset Format
 
-```python
-# [PROJECT DECISION] Landscape TV image
-width  = 224    # horizontal
-height = 128    # vertical
-
-# PyTorch tensor: [B, C, H, W]
-tensor_shape = [B, 3, 128, 224]
-```
-
-**Do not swap H and W.** All configs use explicit `train_height`/`train_width`.
-
----
-
-## Dataset Format
+Ensure your custom dataset is structured as follows:
 
 ```
-duts_data/
+dataset_root/
 ├── train/
 │   ├── images/    (*.jpg, *.png)
 │   └── masks/     (*.png — single-channel, {0,1} or {0,255})
@@ -117,451 +52,100 @@ duts_data/
     └── masks/
 ```
 
-Images and masks are paired by file stem. Prepare DUTS:
-
-```bash
-python prepare_duts_dataset.py --src /path/to/DUTS --dest duts_data
-```
-
-### Mask Value Handling
-
-| Mask values | Behavior |
-|---|---|
-| {0, 1} | Used directly |
-| {0, 255} | 255 → 1 |
-| Other | Error (use `--allow-threshold` to threshold at 127) |
-
-Check your masks:
-```bash
-python check_mask_value.py --data-root duts_data
-```
+### Soft Target Generation
+During data loading, each sample returns a **binary mask** (original foreground) and a **soft mask** (expanded protection zone with cosine feathering):
+1. **Dilation**: Expands the foreground by `protection_radius`.
+2. **Feathering**: Creates a smooth transition region of `transition_width` using a cosine decay function.
 
 ---
 
-## Soft Target Generation
+## 🚀 Getting Started
 
-Each dataset sample returns **two** targets:
+Quickly run training, inference, and evaluation using the pre-configured shell scripts:
 
-1. **`binary_mask`**: Original {0, 1} foreground GT
-2. **`soft_mask`**: Foreground-preserving dimming soft target
-
-### Algorithm
-
-```
-Step A: Protection Dilation
-  dilate(binary_mask, ellipse kernel, radius=2)
-  → protected_fg region, all M=1
-
-Step B: Outward Distance Transform
-  cv2.distanceTransform on inverted protected_fg
-  → distance of each background pixel to nearest protected foreground
-
-Step C: Cosine Feather (transition_width=8)
-  protected foreground:  M = 1
-  transition (0 < d < T): M = 0.5 × (1 + cos(π × d / T))
-  far background (d ≥ T): M = 0
-```
-
-### Properties
-
-- Original foreground → `soft_target == 1.0` (guaranteed)
-- Dilated protection zone → `soft_target == 1.0`
-- Smooth cosine transition outward
-- Far background → `soft_target == 0.0`
-
-### Augmentation Ordering
-
-```
-load RGB + binary mask
-    ↓
-joint geometric augmentation (scale, crop, flip)
-    ↓
-resize to 128×224 (mask: nearest-neighbor)
-    ↓
-generate soft target at FINAL resolution
-    ↓
-ImageNet normalize
-```
-
-### Configurable Parameters
-
-```python
-protection_radius = 2     # [PROJECT DECISION] dilation radius
-transition_width = 8      # [PROJECT DECISION] cosine feather width
-soft_target_mode = "cosine"
-```
-
-### Visual Inspection
-
+### 1. Training (`train.sh`)
+Start training on your dataset using `train.sh`:
 ```bash
-python inspect_soft_target.py --data-root duts_data --num-samples 10
-
-# Compare parameters
-python inspect_soft_target.py --data-root duts_data --num-samples 5 --compare
+./train.sh
 ```
+
+**Key Parameters for `train.py`**:
+* `--model`: Model type (`fast_scnn_dimming` or `fast_scnn_dual_head`).
+* `--data-root`: Path to the dataset directory.
+* `--pretrained`: Path to pretrained weights (`.pt`) to initialize the backbone.
+* `--train-height` / `--train-width`: Spatial resolution of training inputs (e.g., 512 × 1024).
+* `--val-height` / `--val-width`: Spatial resolution of validation inputs.
+* `--batch-size`: Batch size (e.g., 16).
+* `--epochs`: Total number of training epochs.
+* `--optimizer`: Optimizer type (`adamw` or `sgd`).
+* `--learning-rate` (or `--lr`): Initial learning rate (e.g., `1e-4` for fine-tuning, `1e-3` for training from scratch).
+* `--scheduler`: LR scheduler (`poly` or `cosine`).
+* `--poly-power`: Decay power factor for the Poly scheduler.
+* `--checkpoint-save-interval`: Interval (in epochs) to save checkpoints.
+* `--seed`: Random seed for reproducibility.
+* `--allow-threshold`: Automatically thresholds masks that are not strictly binary.
+* `--protection-radius`: Dilation radius for soft target generation.
+* `--transition-width`: Cosine feathering width for soft target generation.
+* `--coarse-only-epochs`: Number of epochs in **Phase 1** to train only the Coarse Head (default: `5`). Helps stabilize the backbone before fine-tuning details.
+* `--coarse-joint-training`: If enabled, continues training the Coarse Head jointly with the Fine Head during **Phase 2**. If disabled, Coarse Head is frozen in Phase 2.
+* `--coarse-edge-mask-kernel`: Kernel size for edge masking in the Coarse Head loss (helps the Coarse Head ignore edge details and focus on the core region).
+* `--coarse-target-dilation-kernel`: Dilation kernel size applied to targets for the Coarse Head loss.
 
 ---
 
-## V1 Training Policy
-
-### Full-Frame Training
-Training uses full-frame resize to `(train_height, train_width)` with `cv2.INTER_LINEAR` for images and `cv2.INTER_NEAREST` for binary masks. It does **not** use random cropping:
-
-```text
-Load RGB + binary mask
-        ↓
-Resize entire frame to train_height × train_width (mask: nearest-neighbor)
-        ↓
-HorizontalFlip
-        ↓
-Brightness / Contrast augmentation
-        ↓
-Normalize (ImageNet mean/std)
-        ↓
-ToTensor
-        ↓
-Generate soft target from FINAL binary mask at full model resolution
+### 2. Batch Inference / Testing (`test.sh`)
+Run predictions on a folder of images using `test.sh`:
+```bash
+./test.sh
 ```
 
-**Rationale:**
-The target application is whole-scene TV background dimming. Random cropping presents local object patches out of global context, creating a distribution mismatch between training and full-frame inference.
-
-*Future Augmentation:* Spatial augmentations (e.g. scale/crop) that preserve global scene context are reserved for future ablation studies.
+**Key Parameters for `inference.py`**:
+* `--weights`: Path to the trained model checkpoint (`.pt`).
+* `--input`: Path to a single image or a folder of images.
+* `--output-dir`: Directory to save visual results (heatmaps, dimmed previews, side-by-side grids).
+* `--height` / `--width`: Input resolution to resize images during inference.
+* `--resize-to-original`: Automatically rescales the output mask back to the original image dimensions.
 
 ---
 
-## Loss
-
+### 3. Metric Evaluation (`eval.sh`)
+Evaluate model performance and compute detailed metrics using `eval.sh`:
+```bash
+./eval.sh
 ```
-L_total = λ_bce × L_bce + λ_l1 × L_l1 + λ_protect × L_protect
-```
 
-| Component | Formula | Default λ |
-|---|---|---|
-| **BCE** | `BCEWithLogitsLoss(logits, soft_target)` | 1.0 |
-| **L1** | `L1(sigmoid(logits), soft_target)` | 1.0 |
-| **Foreground Protection** | `sum((1-prob) × binary_mask) / (sum(binary_mask) + ε)` | 2.0 |
-
-[PROJECT DECISION] `λ_protect = 2.0` — foreground under-protection is penalized more heavily than background over-protection.
+**Key Parameters for `evaluate.py`**:
+* `--weights`: Path to the model checkpoint (`.pt`).
+* `--data-root`: Path to the evaluation dataset.
+* `--split`: Target split (`val` or `test`).
+* `--output-dir`: Directory to save the final metrics summary as a JSON file.
+* `--val-height` / `--val-width`: Input resolution to use during evaluation.
+* `--batch-size`: Batch size.
+* `--threshold`: Binarization threshold (e.g., `0.9`) for binary IoU and Dice evaluations.
+* `--allow-threshold`: Allow thresholding of ground truth masks.
 
 ---
 
-## Metrics & Checkpoint Interpretation
+## 📊 Metrics Description
 
-### Metrics Overview
-- **Binary Segmentation (threshold=0.5):** Foreground IoU, Dice, Precision, Recall
-- **Soft Mask Quality:** MAE, MSE (predicted probability vs soft target)
-- **Foreground Protection:** Mean protection, under-protection error, under-protection rate @0.9
-- **Far-Background Leakage:** `mean(prob[soft_target == 0])` (strictly far background, excluding transition)
-
-### Metric Interpretation in Dimming Context
-> **Important:** Binary IoU / Precision against original binary GT should **not** be the sole metric for model selection.
->
-> The soft target intentionally introduces a protection dilation zone ($M=1.0$) and transition feathering ($0 < M < 1.0$) outside the original foreground. A model predicting high protection in this safety zone will be penalized as "False Positive" in standard binary segmentation metrics, even though this is desirable behavior for TV backlight dimming.
-
-### Checkpoint Selection Strategy
-Checkpoints saved to `checkpoints/<timestamp>/`:
-- **`best_val_loss.pt`** & **`best_soft_mae.pt`**: Primary checkpoints for deployment and baseline comparison.
-- **`best_fg_protection.pt`**: Diagnostic checkpoint. A degenerate model predicting $M=1$ everywhere achieves perfect foreground protection ($1.0$) but has $100\%$ far-background leakage and zero power-saving capability. Always inspect alongside `far_bg_leakage` and `soft_mae`.
-- **`latest.pt`**: Saved every epoch, guaranteed to record the latest best metrics for clean resumption.
+Evaluation outputs a series of metric indicators to evaluate dimming quality:
+1. **Binary Segmentation Metrics (at target `--threshold`)**:
+   * `fg_iou` / `bg_iou`: Intersection over Union of foreground and background.
+   * `miou`: Mean IoU, computed as `(fg_iou + bg_iou) / 2.0`.
+   * `dice`, `precision`, `recall`: Classic segmentation indicators.
+2. **Soft Mask Quality**:
+   * `soft_mae` / `soft_mse`: Mean Absolute Error / Mean Squared Error between the predicted probability map and the soft target.
+3. **Foreground Protection**:
+   * `fg_mean_protection`: Average predicted value on original foreground pixels (closer to 1.0 is better).
+   * `fg_under_protection_error`: Total under-protection penalty score.
+4. **Far-Background Leakage**:
+   * `far_bg_leakage`: Average predicted value on far-background pixels where the soft target is 0. Closer to 0.0 means more power-saving capability.
 
 ---
 
-## Training Commands
+## 🧪 Tests
 
-### 5-Epoch Sanity Training
-Quick sanity run to verify the training and validation pipeline:
-
-```bash
-python train.py \
-  --data-root duts_data \
-  --train-height 128 \
-  --train-width 224 \
-  --val-height 128 \
-  --val-width 224 \
-  --batch-size 16 \
-  --epochs 5 \
-  --optimizer adamw \
-  --learning-rate 1e-3 \
-  --weight-decay 1e-4 \
-  --scheduler poly \
-  --poly-power 0.9 \
-  --lambda-bce 1.0 \
-  --lambda-l1 1.0 \
-  --lambda-protect 2.0 \
-  --protection-radius 2 \
-  --transition-width 8 \
-  --soft-target-mode cosine \
-  --checkpoint-save-interval 1 \
-  --seed 42
-```
-
-### 200-Epoch Formal Baseline Training
-Full baseline training on DUTS:
-
-```bash
-python train.py \
-  --data-root duts_data \
-  --train-height 128 \
-  --train-width 224 \
-  --val-height 128 \
-  --val-width 224 \
-  --batch-size 16 \
-  --epochs 200 \
-  --optimizer adamw \
-  --learning-rate 1e-3 \
-  --weight-decay 1e-4 \
-  --scheduler poly \
-  --poly-power 0.9 \
-  --lambda-bce 1.0 \
-  --lambda-l1 1.0 \
-  --lambda-protect 2.0 \
-  --protection-radius 2 \
-  --transition-width 8 \
-  --soft-target-mode cosine \
-  --checkpoint-save-interval 10 \
-  --seed 42
-```
-
-*(Note: If GPU memory is limited, use `--batch-size 8`, `4`, or `2`. Do not use batch size 1 due to PPM BatchNorm constraints.)*
-
-### Multi-Stage Pretraining & Transfer Learning Pipeline
-
-The codebase supports transfer learning across datasets with different class counts (e.g. COCO-Stuff $\to$ ADE20K $\to$ Binary Dimming). Shape-mismatched classifier layers are automatically skipped and re-initialized while the entire backbone is cleanly transferred:
-
-#### Step 1: Pretrain Backbone on COCO-Stuff (e.g. 182 classes)
-```bash
-python train.py \
-  --data-root path/to/coco_stuff \
-  --num-classes 182 \
-  --batch-size 16 \
-  --epochs 100
-```
-
-#### Step 2: Continue Pretraining on ADE20K (150 classes) using Pretrained COCO Backbone
-```bash
-python train.py \
-  --data-root path/to/ade20k \
-  --num-classes 150 \
-  --pretrained checkpoints/<coco_timestamp>/best_val_loss.pt \
-  --batch-size 16 \
-  --epochs 100
-```
-
-#### Step 3: Fine-tune for Foreground Protection Dimming (Binary, 1 class)
-```bash
-python train.py \
-  --data-root duts_data \
-  --num-classes 1 \
-  --pretrained checkpoints/<ade_timestamp>/best_val_loss.pt \
-  --batch-size 16 \
-  --epochs 200
-```
-
-### Resume Training
-
-```bash
-python train.py --data-root duts_data --resume checkpoints/<timestamp>/latest.pt
-```
-
-### Smoke Test (No Dataset Needed)
-
-```bash
-python train.py --smoke-test
-```
-
-### TensorBoard
-
-```bash
-tensorboard --logdir runs/
-```
-
----
-
-## Evaluation
-
-```bash
-python evaluate.py \
-  --weights checkpoints/<timestamp>/best_val_loss.pt \
-  --data-root duts_data
-
-# Evaluate on test split
-python evaluate.py \
-  --weights checkpoints/<timestamp>/best_val_loss.pt \
-  --data-root duts_data \
-  --split test
-```
-
-Outputs JSON summary to `evaluation_results/`.
-
----
-
-## Inference
-
-```bash
-# Single image (auto-resolves resolution from checkpoint config)
-python inference.py \
-  --weights checkpoints/<timestamp>/best_val_loss.pt \
-  --input photo.jpg
-
-# Folder
-python inference.py \
-  --weights checkpoints/<timestamp>/best_val_loss.pt \
-  --input images/ \
-  --resize-to-original
-```
-
-Outputs: soft mask, binary visualization, heatmap, dimmed preview, side-by-side comparison.
-
----
-
-## ONNX Export
-
-```bash
-# Export raw logits (default)
-python export.py --weights checkpoints/<timestamp>/best_val_loss.pt
-
-# Export with sigmoid
-python export.py --weights checkpoints/<timestamp>/best_val_loss.pt --include-sigmoid
-```
-
-Default opset: 17 [PROJECT DECISION]. Validates shape and numerical consistency with PyTorch.
-
----
-
-## Tests
-
+Validate the code structure, shapes, losses, and metrics using PyTest:
 ```bash
 pytest tests/ -v
 ```
-
-| Test file | What it tests |
-|---|---|
-| `test_model.py` | Feature shapes at every stage, H/W checks, gradient flow, custom resolution |
-| `test_soft_target.py` | Range, foreground preservation, direction, distance monotonicity, edge cases |
-| `test_losses.py` | Loss behavior, under-protection penalty, empty foreground, backward pass |
-| `test_dataset.py` | Full-frame resize, mask nearest interpolation, {0,1}/{0,255}, shapes, dtypes |
-| `test_metrics.py` | Metric correctness with known inputs, accumulation, reset |
-| `test_checkpoint.py` | Checkpoint save/load, multi-epoch resume and best metrics bookkeeping |
-
----
-
-## Dimming Simulation
-
-```python
-# Brightness mapping: D = D_min + (1 - D_min) × M
-# Example with D_min = 0.5:
-#   M=1.0 → brightness 100%
-#   M=0.8 → 90%
-#   M=0.5 → 75%
-#   M=0.0 → 50%
-```
-
-[PROJECT DECISION] This is a visualization aid, not a real TV power model.
-
----
-
-## Project Structure
-
-```
-fast-scnn-dimming/
-├── .gitignore
-├── README.md
-├── requirements.txt
-├── config.py                    # Centralized config (dataclass + CLI)
-├── dataset.py                   # DimmingDataset + DataLoader factory
-├── train.py                     # Training pipeline
-├── evaluate.py                  # Evaluation with full metrics
-├── inference.py                 # Single image / folder inference
-├── export.py                    # ONNX export + validation
-├── prepare_duts_dataset.py      # DUTS split utility
-├── check_mask_value.py          # Mask value distribution checker
-├── inspect_soft_target.py       # Soft target visual inspection
-├── models/
-│   ├── __init__.py
-│   └── fast_scnn_dimming.py     # FastSCNNDimming model
-├── utils/
-│   ├── __init__.py
-│   ├── losses.py                # BCE + L1 + FG Protection
-│   ├── metrics.py               # All evaluation metrics
-│   ├── soft_target.py           # Soft target generator
-│   ├── scheduler.py             # PolyLR + CosineAnnealing
-│   ├── checkpoint.py            # Atomic save/load
-│   ├── visualization.py         # Dimming visualization
-│   └── seed.py                  # Reproducibility
-├── tests/
-│   ├── __init__.py
-│   ├── test_model.py
-│   ├── test_soft_target.py
-│   ├── test_losses.py
-│   ├── test_dataset.py
-│   └── test_metrics.py
-├── duts_data/                   # Dataset (gitignored content)
-├── checkpoints/
-├── training_results/
-├── evaluation_results/
-├── inference_results/
-├── runs/                        # TensorBoard
-└── exports/                     # ONNX models
-```
-
----
-
-## Ablation Plan
-
-| Exp | Architecture | Target | Loss | Purpose |
-|---|---|---|---|---|
-| 0 | Original Fast-SCNN (OS8/OS32) | binary GT | BCE | Baseline reference |
-| 1 | deep OS32→OS16 | binary GT | BCE | Does deeper resolution help? |
-| 2 | shallow OS8→OS4, deep OS16 | binary GT | BCE | Does higher-res skip help? |
-| 3 | OS4/OS16 | soft foreground-preserving GT | BCE | Does soft target help? |
-| 4 | OS4/OS16 | soft GT | BCE + L1 | Does L1 improve quality? |
-| **5** | **OS4/OS16** | **soft GT** | **BCE + L1 + FG Protect** | **Full baseline** |
-
-Current implementation = **Exp 5**. Disable components via config:
-
-```bash
-# Reproduce Exp 3 (BCE only)
-python train.py --lambda-l1 0 --lambda-protect 0
-
-# Reproduce Exp 4 (BCE + L1)
-python train.py --lambda-protect 0
-```
-
----
-
-## Future Work
-
-The following are **NOT** implemented in V1 — reserved for future ablation:
-
-- PPM `(1, 2, 4)` pool sizes
-- Boundary / edge loss
-- Attention (CBAM, SE)
-- Temporal consistency for video
-- EMA temporal smoothing
-- Optical-flow-aware smoothing
-- Hardware quantization (INT8)
-- ASIC constraints for TV SoC
-- Guided filter post-processing
-- Actual TV power model
-- Knowledge distillation
-- Dice / Focal / Tversky loss
-- ASPP module
-- Dual-head architecture
-
----
-
-## [PROJECT DECISION] Summary
-
-All decisions not from the original Fast-SCNN paper are marked with `[PROJECT DECISION]`:
-
-- Input: W=224 × H=128 (landscape TV)
-- LtD output stride: /4 (not /8)
-- Deep output stride: /16 (not /32)
-- PPM pool sizes: (1, 2, 3, 6)
-- Single-channel output with BCE
-- Soft target: cosine feather with dilation
-- Protection radius: 2, transition width: 8
-- Loss: BCE(1.0) + L1(1.0) + FG Protect(2.0)
-- Optimizer: AdamW (paper uses SGD)
-- Dropout: 0.1
